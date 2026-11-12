@@ -10,15 +10,15 @@ This repository implements a PDF whiteboard inversion tool (CLI + GUI) using
 ## TODO Tracker
 | ID | Description | Owner | Status | Notes |
 |----|-------------|-------|--------|-------|
-| T-01 | Project scaffolding (git init, packaging) | Planner / Dev Lead | pending | |
-| T-02 | Core library package structure | Dev | pending | |
-| T-03 | PDF → images conversion | Dev | pending | |
-| T-04 | Image enhancement pipeline | Dev | pending | |
-| T-05 | Images → PDF assembly | Dev | pending | |
-| T-06 | CLI wrapper | Dev | pending | |
-| T-07 | GUI prototype | Dev | pending | |
-| T-08 | Logging & error handling | Dev | pending | |
-| T-09 | Configuration file support (optional) | Dev | pending | |
+| T-01 | Project scaffolding (git init, packaging) | Planner / Dev Lead | completed | |
+| T-02 | Core library package structure | Dev | completed | |
+| T-03 | PDF → images conversion | Dev | completed | |
+| T-04 | Image enhancement pipeline | Dev | completed | |
+| T-05 | Images → PDF assembly | Dev | completed | |
+| T-06 | CLI wrapper | Dev | completed | |
+| T-07 | GUI prototype | Dev | completed | |
+| T-08 | Logging & error handling | Dev | completed | |
+| T-09 | Configuration file support (optional) | Dev | completed | |
 | T-10 | Unit test suite | Tester | pending | |
 | T-11 | Integration test | Tester | pending | |
 | T-12 | Performance test | Tester | pending | |
