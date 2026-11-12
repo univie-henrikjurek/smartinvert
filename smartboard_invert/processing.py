@@ -62,7 +62,7 @@ def pdf_to_images(pdf_path: str | Path, dpi: int = 150) -> List[np.ndarray]:
         # Zoom factor to achieve the required DPI (72 is the default DPI in MuPDF)
         zoom = dpi / 72
         mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, colorspace=fitz.PDF_COLORSPACE_RGB)
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
         # Convert the pixmap to a NumPy array (BGR for OpenCV compatibility)
         img = np.frombuffer(pix.samples, dtype=np.uint8)
         img = img.reshape(pix.height, pix.width, 3)
