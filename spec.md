@@ -96,3 +96,51 @@ smartboard-invert --input board.pdf --output board_fixed.pdf \
 *Document version:* 2026‑11‑12, **Planner v1.0**
 
 ---
+
+## Phase 2 (2026‑11‑14): Selektive Smartboard-Invertierung mit automatischer Bereichserkennung
+
+Phase 2 ersetzt das Kernverhalten von Phase 1: Das Tool invertiert **nicht** mehr die
+gesamte Seite bzw. ein beliebig dunkles Kontur-Areal, sondern erkennt pro Seite das
+rechteckige Smartboard-Bild und invertiert **ausschließlich** dieses Rechteck.
+
+### 2.1 Neue/veränderte Anforderungen (govern Phase 2)
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P2‑FR‑1** | Automatische Rechteckerkennung | Pro Seite selbstständige Erkennung des rechteckigen Smartboard-Inhaltsbereichs via Helligkeitsanalyse, adaptivem Thresholding, Connected Components, Bounding-Box-/Rechteck-Analyse. Muss auch dunkelgraue Hintergründe erkennen, darf nicht durch einzelne dunkle Zeichen/Zeichnungen ausgelöst werden, toleriert leichte Rand-Schatten. |
+| **P2‑FR‑2** | Fail-safe | Wenn kein **eindeutiger** Bereich erkannt werden kann: verständliche Warnung, Seite bleibt **unverändert**. Es darf **niemals** die gesamte (weiße) Seite invertiert werden und der Inhalt nie außerhalb seines ursprünglichen Rechtecks erscheinen/beschnitten werden. |
+| **P2‑FR‑3** | Selektive Invertierung | Nur innerhalb der erkannten Bounding Box: `kanal_neu = 255 − kanal_alt` (RGB, pixelbasiert). Alles außerhalb bleibt pixelgenau unverändert. Anti-Aliasing/Graustufen/Farben werden damit natürlich übernommen. |
+| **P2‑FR‑4** | Seitengröße & Position | Ursprüngliche Seitengröße (MediaBox) und Position des Smartboard-Bereichs müssen exakt erhalten bleiben. Kein Zuschneiden, keine neue Seitengröße. |
+| **P2‑FR‑5** | Batch & Dateinamen | Alle PDFs in `inputs/` verarbeiten; Ausgabe im Output-Verzeichnis **unter demselben Dateinamen** (`inputs/Test.pdf` → `outputs/Test.pdf`). Originaldateien dürfen nie überschrieben/geändert werden. |
+| **P2‑FR‑6** | Mehrseitigkeit | Jede Seite wird unabhängig analysiert; Reihenfolge und Anzahl der Seiten bleiben erhalten. |
+| **P2‑FR‑7** | Debug-Visualisierung | Option (`--debug`): pro Seite ein Composite-Bild (Original \| Original mit BBox \| Ergebnis) unter `outputs/debug/`. |
+| **P2‑FR‑8** | CLI | `python -m smartboard_invert` (Default: `inputs/` → `outputs/`); `--input`, `--output` (Datei **oder** Verzeichnis), `--dpi`, `--verbose`; `--clahe`/`--clean` bleiben als Optionen erhalten, sind aber **default AUS** (reine Invertierung). |
+
+### 2.2 Abweichungen zu Phase 1 (dokumentiert)
+
+| # | Abweichung | Begründung |
+|---|------------|------------|
+| **P2‑D‑1** | CLAHE & Morphology default **aus** | Phase-2-Invertierung ist strikt `255 − v`; Vor-Verarbeitung würde Pixelwerte verfälschen. Beide bleiben als opt-in Flags (Rückwärtskompatibilität). |
+| **P2‑D‑2** | Output heißt wie Input (im Output-Verzeichnis), nicht `<stem>_inverted.pdf` | Vorgabe Phase 2 (Batch-Verarbeitung). Einzelne Datei-→-Datei-Konvertierung bleibt möglich. |
+| **P2‑D‑3** | Ausgabe-PDF-Erzeugung: Image-XObject-Ersetzung (Primärpfad) bzw. Re-Rasterisierung **in Original-Größe** (Fallback) statt „Bildgröße = Seitengröße in pt“ | Phase-1-Verfahren erzeugte Seiten in Pixelgröße (A4@150dpi → 1240×1755 pt) und verstieß gegen P2‑FR‑4. |
+| **P2‑D‑4** | Erkennung läuft auf hochauflösendem Seiten-Render **und** (falls vorhanden) auf dem nativen Bild-XObject | Die Beispieldatei `inputs/test.pdf` enthält **keine** Bild-XObjects, sondern Vektor-Grafik (ein dunkles Rechteck + weiße Pfade). Echte Smartboard-Exporte sind typischerweise ein einzelnes Bild pro Seite. Beide Fälle müssen funktionieren. |
+
+### 2.3 Pflichttest-Szenarien (Phase 2)
+
+1. Weißer Seitenhintergrund + schwarzes Smartboard-Rechteck.
+2. Weißer Seitenhintergrund + dunkelgrauem Smartboard-Rechteck.
+3. Weißer Seitenhintergrund + Rechteck in unterschiedlicher Position.
+4. Mehrseitige PDF (jede Seite eigenständig).
+5. PDF **ohne** erkennbaren Smartboard-Bereich → Warnung, Seite unverändert.
+6. Pixel außerhalb des erkannten Bereichs bleiben unverändert.
+7. Weiße Schrift im Board wird nach der Invertierung dunkel.
+8. PDF-Seitengröße bleibt unverändert.
+
+Alle Szenarien werden mit **synthetischen** PDFs/Bildern getestet (unabhängig von
+`inputs/test.pdf`).
+
+---
+
+*Phase 2 addendum:* 2026‑11‑14, **Supervisor**
+
+---
