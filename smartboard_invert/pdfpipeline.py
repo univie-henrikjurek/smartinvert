@@ -25,6 +25,7 @@ Three output methods exist per page (see ADR 0001, D2):
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -151,11 +152,10 @@ def process_pdf(
             if progress is not None:
                 progress(pno + 1, total)
         out_doc.save(str(output_path), garbage=3, deflate=True)
-    except Exception:
+    finally:
+        # Close both documents on every path (including errors).
         out_doc.close()
-        raise
-    src.close()
-    out_doc.close()
+        src.close()
     logger.info("Wrote %s (%s)", output_path, result.summary())
     return result
 
@@ -188,11 +188,30 @@ def _process_page(
     page = src.load_page(pno)
     page_rect = page.rect
     if page.rotation not in (0,):
+        # Fail-safe (A-11): pages with /Rotate are copied unchanged.  The
+        # pixel<->point mapping used for detection/inversion is not valid for
+        # rotated pages, and a wrong inversion would be worse than none.
         logger.warning(
-            "Page %d has rotation %d – processing via re-rasterization fallback",
+            "Page %d has rotation %d – not processed (fail-safe), page copied "
+            "unchanged",
             pno + 1,
             page.rotation,
         )
+        img_orig = _render_page(page, dpi)
+        pr = PageResult(
+            page_index=pno,
+            detected=False,
+            method="copy",
+            message=f"page has rotation {page.rotation} – copied unchanged (fail-safe)",
+        )
+        new_page = _add_page_copy(out_doc, src, pno, page_rect)
+        _write_debug(
+            debug_dir, stem, pno, img_orig,
+            DetectionResult(found=False, message=pr.message),
+            img_orig,
+        )
+        _verify_page(new_page, img_orig, None, dpi, pr)
+        return pr
 
     img_orig = _render_page(page, dpi)
     height, width = img_orig.shape[:2]
@@ -300,7 +319,19 @@ def _transform_render(img: np.ndarray, rect: Rect, invert: bool, apply_clahe: bo
 
 
 def _add_page_copy(out_doc, src, pno: int, page_rect) -> "fitz.Page":
-    """Append a lossless copy of ``src[pno]`` with the same size."""
+    """Append a lossless copy of ``src[pno]``.
+
+    Non-rotated pages: ``page.rect`` is the CropBox, a same-sized page plus
+    ``show_pdf_page`` maps the content 1:1.
+
+    Rotated pages (``/Rotate != 0``): ``show_pdf_page`` does *not* carry the
+    source's ``/Rotate`` attribute over – the content would render
+    unrotated.  Those pages are copied with ``insert_pdf`` instead, which
+    preserves MediaBox, ``/Rotate`` and the content stream losslessly.
+    """
+    if src.load_page(pno).rotation not in (0,):
+        out_doc.insert_pdf(src, from_page=pno, to_page=pno)
+        return out_doc.load_page(out_doc.page_count - 1)
     new_page = out_doc.new_page(width=page_rect.width, height=page_rect.height)
     new_page.show_pdf_page(new_page.rect, src, pno)
     return new_page
@@ -324,22 +355,14 @@ def _embed_full_page_image(page, page_rect, img: np.ndarray) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _find_board_image(page, rect_pt: Tuple[float, float, float, float]):
-    """Return the image XObject (get_image_info entry) that *is* the board.
+def _pick_board_image(infos: List[dict], rect: "fitz.Rect", tol: float = 2.0):
+    """Pick the image XObject (get_image_info entry) that *is* the board.
 
     The image bbox must cover the detected rectangle (small tolerance), be at
     least half as large as the rectangle and be axis-aligned (no rotation or
-    shear in the placement transform).
+    shear in the placement transform).  The largest matching image wins.
     """
-    x0, y0, x1, y1 = rect_pt
-    rect = fitz.Rect(x0, y0, x1, y1)
-    tol = 2.0
     best = None
-    try:
-        infos = page.get_image_info(xrefs=True)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.debug("get_image_info failed: %s", e)
-        return None
     for info in infos:
         ib = fitz.Rect(info["bbox"])
         if not (
@@ -357,14 +380,20 @@ def _find_board_image(page, rect_pt: Tuple[float, float, float, float]):
             if abs(transform[1]) > 1e-3 or abs(transform[2]) > 1e-3:
                 logger.debug("image %s is not axis-aligned – skipping", info.get("xref"))
                 continue
-        if best is None or ib.get_area() > best_bbox_area(best):
+        if best is None or ib.get_area() > fitz.Rect(best["bbox"]).get_area():
             best = info
     return best
 
 
-def best_bbox_area(info) -> float:
-    ib = fitz.Rect(info["bbox"])
-    return ib.get_area()
+def _find_board_image(page, rect_pt: Tuple[float, float, float, float]):
+    """Board image XObject on *page*, or ``None``."""
+    rect = fitz.Rect(*rect_pt)
+    try:
+        infos = page.get_image_info(xrefs=True)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("get_image_info failed: %s", e)
+        return None
+    return _pick_board_image(infos, rect)
 
 
 def _decode_extracted_image(info: dict) -> np.ndarray:
@@ -413,26 +442,12 @@ def _try_image_replace(
     must be used.
     """
     rect = fitz.Rect(*rect_pt)
-    tol = 2.0
     try:
         infos = page.get_image_info(xrefs=True)
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("get_image_info failed on copied page: %s", e)
         return False
-    candidate = None
-    for info in infos:
-        ib = fitz.Rect(info["bbox"])
-        if not (
-            ib.x0 <= rect.x0 + tol
-            and ib.y0 <= rect.y0 + tol
-            and ib.x1 >= rect.x1 - tol
-            and ib.y1 >= rect.y1 - tol
-        ):
-            continue
-        if ib.get_area() < 0.5 * rect.get_area():
-            continue
-        if candidate is None or ib.get_area() > fitz.Rect(candidate["bbox"]).get_area():
-            candidate = info
+    candidate = _pick_board_image(infos, rect)
     if candidate is None:
         logger.debug("no board image found on copied page")
         return False
@@ -482,10 +497,39 @@ def _try_image_replace(
         )
         return False
 
-    # Invert only inside the native rect, then replace the XObject (PNG:
+    # The inversion follows the **page-level** rectangle mapped into image
+    # space (not the native detection rect).  This guarantees that everything
+    # outside the detected rectangle – including any light border that might
+    # be part of the image – stays untouched (P2-FR-3).
+    #
+    # Start coordinates are rounded *outward* (ceil) and end coordinates
+    # *inward* (floor): the mapping from the (sub-pixel) page rect to image
+    # pixels is then conservative, so every inverted native pixel lies fully
+    # inside the detected rect.  Without this, ``round()`` can pull in a
+    # border row/column that belongs to the untouched margin (off-by-one).
+    inv_rect = clamp_rect(
+        (
+            int(math.ceil((rect.x0 - ib.x0) / sx)),
+            int(math.ceil((rect.y0 - ib.y0) / sy)),
+            int(math.floor((rect.x1 - ib.x0) / sx)),
+            int(math.floor((rect.y1 - ib.y0) / sy)),
+        ),
+        nat_w,
+        nat_h,
+    )
+    if (
+        inv_rect[2] - inv_rect[0] < 0.5 * nat_w
+        or inv_rect[3] - inv_rect[1] < 0.5 * nat_h
+    ):
+        logger.warning(
+            "page-level rect maps to a degenerate area inside the board image "
+            "– falling back to re-rasterization",
+        )
+        return False
+    x0, y0, x1, y1 = inv_rect
+
+    # Invert only inside the mapped rect, then replace the XObject (PNG:
     # lossless, same dimensions).
-    processed = native
-    x0, y0, x1, y1 = det.rect
     region = native[y0:y1, x0:x1]
     region = processing._process_region(region, apply_clahe, clean)
     if invert:
@@ -584,8 +628,10 @@ def _write_debug(
         combined[:, x : x + panel.shape[1]] = panel
         x += panel.shape[1] + 10
     out_path = debug_dir / f"{stem}_p{pno + 1:02d}_debug.png"
-    cv2.imwrite(str(out_path), combined)
-    logger.info("Debug image written: %s", out_path)
+    if cv2.imwrite(str(out_path), combined):
+        logger.info("Debug image written: %s", out_path)
+    else:  # pragma: no cover - defensive
+        logger.warning("failed to write debug image: %s", out_path)
 
 
 def _verify_page(

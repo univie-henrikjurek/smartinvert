@@ -10,8 +10,10 @@ Algorithm (see ADR 0001, D1):
 
 1. Grayscale conversion + small Gaussian blur (suppresses anti-aliasing noise).
 2. Background brightness estimate ``B = percentile(gray, 95)``.
-3. Adaptive threshold ``T = min(Otsu(gray), B - 25)`` and dark mask
-   ``gray < T``.
+3. Background-relative adaptive threshold
+   ``T = B - max(30, 0.25 * (B - percentile(gray, 25)))`` and dark mask
+   ``gray < T``.  (cv2 Otsu is deliberately not used – it degenerates on
+   strictly bimodal histograms in OpenCV >= 5.)
 4. Morphological closing (kernel scaled to image size) to fill white text
    holes inside the board and to bridge thin anti-aliased gaps.
 5. ``connectedComponentsWithStats`` (8-connectivity) followed by hard
@@ -302,8 +304,15 @@ def detect_smartboard_region(
     # The blur (step 1) smears the board edge a few pixels into the white
     # margin, so the closed-mask bbox can be slightly larger than the true
     # dark area.  Recompute the bbox from the *unblurred* dark pixels of the
-    # winning component so the rectangle does not grow into the margin.
-    rect = _refine_bbox(raw_dark, labels, int(best["label"]), best["bbox"])
+    # winning component so the rectangle does not grow into the margin.  The
+    # plausibility tolerance scales with the blur kernel (halo size).
+    rect = _refine_bbox(
+        raw_dark,
+        labels,
+        int(best["label"]),
+        best["bbox"],
+        tolerance=max(2, blur_k // 2),
+    )
 
     result = DetectionResult(
         found=True,
@@ -357,7 +366,9 @@ def _reject(
     background: float = 0.0,
     candidates: Optional[List[dict]] = None,
 ) -> DetectionResult:
-    logger.warning("detection failed: %s", message)
+    # The caller (pipeline / enhance_image_ex) logs the user-facing warning;
+    # this is the detailed debug trail.
+    logger.debug("detection failed: %s", message)
     return DetectionResult(
         found=False,
         confidence=0.0,

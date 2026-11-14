@@ -262,6 +262,35 @@ class TestCliInProcess:
         rc = cli.main(["--config", str(cfg)])
         assert rc == 1
 
+    def test_main_config_bad_type_fails(self, tmp_path):
+        """A config value with a wrong type must produce a clean error, not
+        an unhandled exception (NFR-5)."""
+        cfg = tmp_path / "badtype.json"
+        cfg.write_text('{"dpi": "not-a-number", "input": 42}')
+        rc = cli.main(["--config", str(cfg)])
+        assert rc == 1
+
+    def test_main_config_unknown_key_ignored(self, tmp_path):
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        outd = tmp_path / "outputs"
+        synth.make_pdf(ind / "u.pdf", [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        cfg = tmp_path / "u.json"
+        cfg.write_text('{"some_future_option": true}')
+        rc = cli.main(["--input", str(ind), "--output", str(outd), "--config", str(cfg)])
+        assert rc == 0
+        assert (outd / "u.pdf").is_file()
+
+    def test_main_prints_ok_lines_on_stdout(self, tmp_path, capsys):
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        outd = tmp_path / "outputs"
+        synth.make_pdf(ind / "s.pdf", [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        rc = cli.main(["--input", str(ind), "--output", str(outd)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "OK" in out and "s.pdf" in out
+
     def test_version_flag_exits(self):
         with pytest.raises(SystemExit) as exc:
             cli.main(["--version"])

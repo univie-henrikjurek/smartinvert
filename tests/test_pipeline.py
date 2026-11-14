@@ -299,13 +299,13 @@ def test_board_with_white_border_keeps_border(tmp_path):
 
 
 def test_input_file_not_modified(tmp_path):
-    pages = [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}]
-    src, dst, truths, result = process(tmp_path, pages)
-    # re-read: hash must be the same as right after creation
-    assert sha256(src) == sha256(src)
+    src = tmp_path / "in.pdf"
+    make_pdf(src, [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
     before = sha256(src)
+    dst = tmp_path / "out.pdf"
+    process_pdf(src, dst, dpi=DPI)  # first run
     process_pdf(src, dst, dpi=DPI)  # second run over the same input
-    assert sha256(src) == before
+    assert sha256(src) == before  # input untouched after both runs
 
 
 def test_output_must_differ_from_input(tmp_path):
@@ -411,16 +411,16 @@ def test_page_error_is_reraised_and_doc_closed(tmp_path, monkeypatch):
     assert not (tmp_path / "out.pdf").exists()
 
 
-def test_rotated_page_warns_but_processes(tmp_path, caplog):
-    """A page with /Rotate != 0 is processed via the documented fallback and
-    a warning is emitted (assumption A-11)."""
+def test_rotated_page_copied_unchanged(tmp_path, caplog):
+    """A page with /Rotate != 0 is a documented fail-safe (A-11): copied
+    unchanged with a warning (no risky pixel mapping on rotated pages)."""
+    import cv2
+
     from smartboard_invert.processing import fitz
 
     src = tmp_path / "rot_page.pdf"
     doc = fitz.open()
     page = doc.new_page(width=A4_W, height=A4_H)
-    import cv2
-
     img = synth.board_image(600, 1100, bg=(15, 15, 15), text=False)
     ok, png = cv2.imencode(".png", img)
     page.insert_image(fitz.Rect(150, 200, 450, 500), stream=png.tobytes())
@@ -430,8 +430,60 @@ def test_rotated_page_warns_but_processes(tmp_path, caplog):
 
     with caplog.at_level("WARNING", logger="smartboard_invert.pdfpipeline"):
         result = process_pdf(src, tmp_path / "out.pdf", dpi=DPI)
-    assert len(result.pages) == 1
+    page_res = result.pages[0]
+    assert not page_res.detected
+    assert page_res.method == "copy"
     assert any("rotation" in r.message.lower() for r in caplog.records)
+    a, b = renders(src, tmp_path / "out.pdf")
+    assert cv2.absdiff(a[0], b[0]).max() == 0  # pixel-identical copy
+
+
+def test_thin_white_border_not_inverted_full_coverage(tmp_path):
+    """An image that is >95% dark with a thin (~2%) white inner border:
+    the full-coverage native detection must not drag the border into the
+    inversion – the border stays white (inversion follows the page-level
+    rectangle, ADR 0001)."""
+    pages = [
+        {"kind": "image", "rect": (150, 150, 300, 550), "bg": (15, 15, 15), "border": 4, "text": False}
+    ]
+    src, dst, truths, result = process(tmp_path, pages)
+    page = result.pages[0]
+    assert page.detected, page.message
+    assert page.method == "image-replace"
+    a, b = renders(src, dst)
+    gt = truths[0]["rect_px"]  # dark area (border already excluded)
+    # the border strip above the dark area (inside the image bbox) stays white
+    img_x0 = int(150 * synth.PX_PER_PT)
+    img_y0 = int(150 * synth.PX_PER_PT)
+    strip = b[0][img_y0 + 1 : int(gt[1]) - 1, img_x0 + 40 : img_x0 + 560]
+    assert strip.shape[0] > 0
+    assert cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY).mean() > 240
+    # outside the detected rect: unchanged; inside: inverted
+    mask = outside_mask(page.rect_px, a[0].shape[:2])
+    assert cv2.absdiff(a[0], b[0])[mask].max() == 0
+    assert cv2.absdiff(a[0], b[0])[~mask].mean() > 50
+
+
+def test_image_replace_failure_falls_back_to_rerasterize(tmp_path, monkeypatch):
+    """If the image replacement fails (decode/replace error), the page must
+    fall back to re-rasterization with unchanged outside pixels and preserved
+    page size."""
+    import smartboard_invert.pdfpipeline as pipeline
+
+    pages = [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}]
+    src = tmp_path / "in.pdf"
+    truths = make_pdf(src, pages)
+    monkeypatch.setattr(pipeline, "_try_image_replace", lambda *a, **k: False)
+    result = process_pdf(src, tmp_path / "out.pdf", dpi=DPI)
+    page_res = result.pages[0]
+    assert page_res.detected
+    assert page_res.method == "rerasterize"
+    a, b = renders(src, tmp_path / "out.pdf")
+    gt = truths[0]["rect_px"]
+    mask = outside_mask(gt, a[0].shape[:2], inflate=8)
+    assert cv2.absdiff(a[0], b[0])[mask].max() <= 8
+    assert cv2.absdiff(a[0], b[0])[~mask].mean() > 30
+    assert page_sizes_equal(src, tmp_path / "out.pdf")
 
 
 def test_invert_disabled_copies_page(tmp_path):

@@ -22,4 +22,4 @@ jobs:
           .venv/bin/pip install --break-system-packages -e .
       - name: Run tests
         run: |
-          .venv/bin/python -m pytest --cov=smartboard_invert
+          .venv/bin/python -m pytest --cov=smartboard_invert --cov-fail-under=80

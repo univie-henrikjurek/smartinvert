@@ -41,7 +41,12 @@ ein einzelnes **Bild** pro Seite. Der Pipeline-Design muss **beide** Fälle abde
 - Kandidaten-Filter (harte Gates): Fläche ≥ 1 % der Seite, BBox-Breite/Höhe
   ≥ 4 % der Seitenachse, **Extent** (Fläche/BBox-Fläche) ≥ 0.85 (Rechteckigkeit),
   Randabstand ≥ 0.5 % der Achse (Seite darf nie „komplett" erkannt werden),
-  Kontrast-Check: mittlere Helligkeit innerhalb der BBox < `B − 20`.
+  Kontrast-Check: mittlere Helligkeit innerhalb der BBox < `B − 60` (das Board
+  muss *deutlich* dunkler sein als die Seite).
+- **Bounding-Box-Refinement:** Die geschlossene (geblurte) Maske trägt einen
+  Halo von ~1–3 px in den Rand; die BBox wird deshalb aus der *unblurten*
+  dunklen Maske des gewinnenden Connected Components neu berechnet (mit
+  Kernel-skalierter Plausibilitätstoleranz).
 - **Eindeutigkeit:** der zweitgrößte Kandidat darf < 60 % der Fläche des
   Besten haben, sonst wird abgebrochen (Warnung „mehrere gleichgroße dunkle
   Bereiche").
@@ -71,6 +76,13 @@ Pro Seite (unabhängig voneinander):
 | Nichts erkannt | **copy**: `show_pdf_page` kopiert die Seite verlustfrei in ein neues Dokument mit identischer Größe | exakt (kein Pixel verändert) |
 | Erkannt + passendes Bild-XObject (BBox deckt das Rechteck, axis-aligned, ≥ 50 % der Rechteckfläche) | **image-replace**: Seite kopieren, Bild aus dem XObject extrahieren, nativ erkennen + **nur im Rechteck** invertieren, als PNG (verlustfrei) neu encodieren, `Page.replace_image(xref, stream=…)` | exakt (MediaBox + Plazierung + Außenbereich unverändert) |
 | Erkannt, aber kein passendes Bild (z. B. Vektorgrafik wie `inputs/test.pdf`) | **rerasterize**: Seite in Original-Größe (595×842 pt) anlegen, gerenderte Seite mit nur-im-Rechteck-invertierten Pixeln als volles Seitenbild einbetten | Größe/Position exakt; Außenbereich = Render der Originalseite (verifikations-nah, s. D3) |
+| **`/Rotate ≠ 0`** (Fehlerseite) | **copy (fail-safe)**: Seite wird unverändert kopiert, Warnung im Log. Die Pixel↔Punkt-Mapping für Erkennung/Invertierung ist auf rotierten Seiten nicht gültig – eine falsche Invertierung wäre schlimmer als keine. | Visuelle Seitengröße erhalten; MediaBox kann getauscht sein (dokumentiert) |
+
+**Invertierungs-Invariante im Image-Replacement-Pfad:** In Bildkoordinaten wird
+immer das **Seiten-Rechteck** (auf Bildkoordinaten gemappt) invertiert – nicht
+das nativ erkannte Rechteck. Damit bleibt alles außerhalb des erkannten
+Rechtecks unverändert, auch wenn das Bild einen hellen Innenrand enthält (der
+nativen Full-Coverage-Erkennung wird in dem Fall der Rand mitgeliefert).
 
 Begründung: `replace_image` ist der qualitätsbeste Pfad (kein zweites
 Rasterisieren, Außenbereich buchstäblich unverändert). Der Re-Raster-Fallback

@@ -3,12 +3,11 @@
 Public functions:
 
 1. ``pdf_to_images`` – rasterises each page of a PDF to a NumPy ``ndarray``.
-2. ``detect via :mod:`smartboard_invert.detection`` (imported from
-   :func:`enhance_image_ex`).
-3. ``invert_region`` – strict ``255 − v`` pixel inversion inside a rectangle.
-4. ``enhance_image`` / ``enhance_image_ex`` – detect the smartboard area and
-   apply (optional CLAHE / cleaning /) inversion **only inside** it.
-5. ``images_to_pdf`` – assembles a list of processed images into a PDF (pages
+2. ``invert_region`` – strict ``255 − v`` pixel inversion inside a rectangle.
+3. ``enhance_image`` / ``enhance_image_ex`` – detect the smartboard area
+   (via :mod:`smartboard_invert.detection`) and apply (optional CLAHE /
+   cleaning /) inversion **only inside** it.
+4. ``images_to_pdf`` – assembles a list of processed images into a PDF (pages
    sized to the images; used by the GUI preview and legacy flows – the main
    pipeline lives in :mod:`smartboard_invert.pdfpipeline`).
 
@@ -59,8 +58,12 @@ def pdf_to_images(pdf_path: "str | Path", dpi: int = 150) -> List[np.ndarray]:
     Raises
     ------
     SmartboardError
-        If the file cannot be opened or a page fails to render.
+        If the file cannot be opened, the DPI is out of range, or a page
+        fails to render.
     """
+    if not 20 <= int(dpi) <= 600:
+        raise SmartboardError(f"dpi must be between 20 and 600 (got {dpi})")
+    dpi = int(dpi)
     pdf_path = Path(pdf_path)
     if not pdf_path.is_file():
         raise SmartboardError(f"PDF file not found: {pdf_path}")
@@ -164,7 +167,7 @@ def enhance_image_ex(
         The processed image and the detection result (for logging/debug).
     """
     if img is None or not isinstance(img, np.ndarray) or img.dtype != np.uint8:
-        raise SmartboardError("enhance_image expects a uint8 ndarray")
+        raise SmartboardError("enhance_image_ex expects a uint8 ndarray")
     if img.ndim != 3 or img.shape[2] != 3:
         raise SmartboardError("enhance_image expects a BGR image with 3 channels")
 

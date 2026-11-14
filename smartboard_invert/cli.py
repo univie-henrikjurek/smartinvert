@@ -66,8 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         default=None,
         help=(
-            "Output PDF file (single input) or directory (default: outputs/). "
-            "For a directory, results are stored under the same file name."
+            "Output PDF file (single input) or directory. Default for a "
+            "directory input is outputs/ (same file names); default for a "
+            "single file without --output is <name>_inverted.pdf next to the "
+            "input (legacy behaviour)."
         ),
     )
     parser.add_argument(
@@ -139,14 +141,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: Allowed config keys with their expected types (``null``/missing = default).
+_CONFIG_TYPES: Dict[str, Any] = {
+    "input": str,
+    "output": str,
+    "dpi": int,
+    "invert": bool,
+    "clahe": bool,
+    "clean": bool,
+    "debug": bool,
+}
+
+
 def load_config(path: Path) -> dict:
-    """Load a JSON configuration file."""
+    """Load and validate a JSON configuration file."""
     if not path.is_file():
         raise SmartboardError(f"Config file not found: {path}")
     with path.open() as fp:
         data = json.load(fp)
     if not isinstance(data, dict):
         raise SmartboardError(f"Config file must contain a JSON object: {path}")
+    for key, value in data.items():
+        if key not in _CONFIG_TYPES:
+            logger.debug("ignoring unknown config key: %s", key)
+            continue
+        if value is not None and not isinstance(value, _CONFIG_TYPES[key]):
+            raise SmartboardError(
+                f"config key '{key}' must be of type "
+                f"{_CONFIG_TYPES[key].__name__} (got {type(value).__name__})"
+            )
     return data
 
 
@@ -187,8 +210,6 @@ def _plan_jobs(
         # Backward compatible single-file default: <stem>_inverted.pdf
         return [(input_path, input_path.with_name(input_path.stem + "_inverted.pdf"))]
     if output_path.is_dir():
-        return [(input_path, output_path / input_path.name)]
-    if output_path.exists() and output_path.is_dir():
         return [(input_path, output_path / input_path.name)]
     if output_path.exists() and output_path.is_file():
         return [(input_path, output_path)]
@@ -241,10 +262,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     debug_dir = None
     if opts["debug"]:
-        if input_path.is_dir():
-            debug_dir = jobs[0][1].parent / "debug"
-        else:
-            debug_dir = jobs[0][1].parent / "debug"
+        debug_dir = jobs[0][1].parent / "debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
 
     failures = 0
@@ -271,6 +289,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if failures:
         logger.error("%d file(s) failed", failures)
         return 1
+    # Success summary on stdout (independent of the log level).
+    for _src, dst in jobs:
+        print(f"OK  {dst}")
     return 0
 
 

@@ -140,12 +140,22 @@ class SmartboardGUI:
             messagebox.showwarning("Missing file", "Please select an input PDF first.")
             return
         out_path = Path(pdf_path).with_name(Path(pdf_path).stem + "_inverted.pdf")
+        # Read the Tk variables in the main thread (Tk thread-safety) and hand
+        # plain values to the worker.
+        options = {
+            "dpi": int(self.dpi_var.get()),
+            "invert": bool(self.invert_var.get()),
+            "clahe": bool(self.clahe_var.get()),
+            "clean": bool(self.clean_var.get()),
+        }
         # Disable controls while processing.
         for child in self.master.winfo_children():
             child.configure(state="disabled")
-        threading.Thread(target=self._process_worker, args=(pdf_path, out_path), daemon=True).start()
+        threading.Thread(
+            target=self._process_worker, args=(pdf_path, out_path, options), daemon=True
+        ).start()
 
-    def _process_worker(self, pdf_path: str, out_path: Path):
+    def _process_worker(self, pdf_path: str, out_path: Path, options: dict):
         def on_progress(n: int, total: int):
             def _update():
                 self.progress["maximum"] = total
@@ -157,10 +167,10 @@ class SmartboardGUI:
             result = process_pdf(
                 pdf_path,
                 out_path,
-                dpi=int(self.dpi_var.get()),
-                invert=bool(self.invert_var.get()),
-                apply_clahe=bool(self.clahe_var.get()),
-                clean=bool(self.clean_var.get()),
+                dpi=options["dpi"],
+                invert=options["invert"],
+                apply_clahe=options["clahe"],
+                clean=options["clean"],
                 progress=on_progress,
             )
             self.master.after(
