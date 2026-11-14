@@ -28,13 +28,13 @@ from tkinter import (
     messagebox,
     ttk,
 )
-from tkinter import font as tkfont
 
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
 
 from . import processing
+from .pdfpipeline import process_pdf
 from .processing import SmartboardError
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,6 @@ class SmartboardGUI:
         file_frame = Frame(self.master)
         file_frame.pack(fill="x", padx=10, pady=5)
         Label(file_frame, text="Input PDF:").pack(side="left")
-        self.input_path_var = tkfont.Font().measure  # placeholder to avoid unused
         self.input_path = Entry(file_frame, width=50)
         self.input_path.pack(side="left", padx=5)
         Button(file_frame, text="Browse", command=self.browse_file).pack(side="left")
@@ -69,10 +68,10 @@ class SmartboardGUI:
         # Checkboxes
         self.invert_var = IntVar(value=1)
         Checkbutton(opts_frame, text="Invert colours", variable=self.invert_var).grid(row=1, column=0, columnspan=2, sticky="w")
-        self.clahe_var = IntVar(value=1)
-        Checkbutton(opts_frame, text="Apply CLAHE", variable=self.clahe_var).grid(row=2, column=0, columnspan=2, sticky="w")
-        self.clean_var = IntVar(value=1)
-        Checkbutton(opts_frame, text="Noise cleaning", variable=self.clean_var).grid(row=3, column=0, columnspan=2, sticky="w")
+        self.clahe_var = IntVar(value=0)
+        Checkbutton(opts_frame, text="Apply CLAHE (legacy)", variable=self.clahe_var).grid(row=2, column=0, columnspan=2, sticky="w")
+        self.clean_var = IntVar(value=0)
+        Checkbutton(opts_frame, text="Noise cleaning (legacy)", variable=self.clean_var).grid(row=3, column=0, columnspan=2, sticky="w")
 
         # ---------- Preview ----------
         preview_frame = Frame(self.master)
@@ -104,12 +103,14 @@ class SmartboardGUI:
             if not images:
                 raise SmartboardError("No pages rendered")
             first = images[0]
-            processed = processing.enhance_image(
+            processed, det = processing.enhance_image_ex(
                 first,
                 invert=bool(self.invert_var.get()),
                 apply_clahe=bool(self.clahe_var.get()),
                 clean=bool(self.clean_var.get()),
             )
+            if not det.found:
+                logger.warning("No smartboard region on first page: %s", det.message)
             # Convert both to PIL for display side‑by‑side.
             orig_pil = Image.fromarray(cv2.cvtColor(first, cv2.COLOR_BGR2RGB))
             proc_pil = Image.fromarray(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB))
@@ -145,22 +146,26 @@ class SmartboardGUI:
         threading.Thread(target=self._process_worker, args=(pdf_path, out_path), daemon=True).start()
 
     def _process_worker(self, pdf_path: str, out_path: Path):
+        def on_progress(n: int, total: int):
+            def _update():
+                self.progress["maximum"] = total
+                self.progress["value"] = n
+
+            self.master.after(0, _update)
+
         try:
-            images = processing.pdf_to_images(pdf_path, dpi=int(self.dpi_var.get()))
-            total = len(images)
-            self.progress['maximum'] = total
-            processed_imgs = []
-            for idx, img in enumerate(images, start=1):
-                proc = processing.enhance_image(
-                    img,
-                    invert=bool(self.invert_var.get()),
-                    apply_clahe=bool(self.clahe_var.get()),
-                    clean=bool(self.clean_var.get()),
-                )
-                processed_imgs.append(proc)
-                self.progress['value'] = idx
-            processing.images_to_pdf(processed_imgs, out_path)
-            self.master.after(0, lambda: messagebox.showinfo("Done", f"Saved to {out_path}"))
+            result = process_pdf(
+                pdf_path,
+                out_path,
+                dpi=int(self.dpi_var.get()),
+                invert=bool(self.invert_var.get()),
+                apply_clahe=bool(self.clahe_var.get()),
+                clean=bool(self.clean_var.get()),
+                progress=on_progress,
+            )
+            self.master.after(
+                0, lambda: messagebox.showinfo("Done", f"Saved to {out_path}\n{result.summary()}")
+            )
         except SmartboardError as e:
             self.master.after(0, lambda: messagebox.showerror("Error", str(e)))
         except Exception as e:

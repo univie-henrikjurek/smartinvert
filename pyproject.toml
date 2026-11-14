@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smartboard-invert"
-version = "0.1.0"
-description = "PDF whiteboard inversion tool (CLI + simple GUI)"
+version = "0.2.0"
+description = "Selective smartboard inversion for PDFs (auto rectangle detection, CLI + simple GUI)"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -21,6 +21,18 @@ dependencies = [
 
 [project.scripts]
 smartboard-invert = "smartboard_invert.cli:main"
+
+[tool.coverage.run]
+# GUI is headless-only (needs a display) and __main__ is a thin entry-point
+# wrapper exercised through the CLI tests; both are excluded from the
+# 80% core-coverage gate.
+omit = [
+    "smartboard_invert/gui.py",
+    "smartboard_invert/__main__.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["."]
