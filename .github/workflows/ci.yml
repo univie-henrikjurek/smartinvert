@@ -9,17 +9,29 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: ${{ matrix.python-version }}
       - name: Create venv
         run: python -m venv .venv
-      - name: Install dependencies
+      # Install as a real (non-editable) package – the same path start.sh uses
+      # for end users, so CI validates the actual installation experience.
+      - name: Install package
         run: |
-          .venv/bin/pip install --break-system-packages -e .
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet .
       - name: Run tests
         run: |
           .venv/bin/python -m pytest --cov=smartboard_invert --cov-fail-under=80
+      - name: Smoke test (CLI entry point + sample run)
+        run: |
+          .venv/bin/smartinvert --version
+          .venv/bin/smartinvert -i inputs/test.pdf -o /tmp/inv_out/test.pdf
+          test -f /tmp/inv_out/test.pdf

@@ -18,6 +18,21 @@ move/crop content).
 All Phase-2 TODOs completed, test suite green (88 tests, 90.16 % coverage,
 gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
 
+**Phase 3 – Distribution (2026-11-15, DONE):**
+- CLI renamed `smartboard-invert` → **`smartinvert`** (v0.3.0)
+- One-command starter: `./start.sh` (Linux/macOS) / `start.bat` (Windows) –
+  creates `.venv` on first run, `pip install .`, then runs `smartinvert "$@"`
+  (with arguments) or opens the GUI (without arguments)
+- `opencv-python` → `opencv-python-headless` (no highgui used; avoids libGL
+  on Linux) – full suite re-verified green
+- `LICENSE` (MIT) added; `classifiers`/`keywords` in pyproject
+- GUI: folder input (batch) + optional output field
+- CI: Python 3.9 + 3.13 matrix, installs as real (non-editable) package,
+  smoke test on `inputs/test.pdf`; `--break-system-packages` removed
+- Repo: https://github.com/univie-henrikjurek/smartinvert (private), tag
+  v0.3.0; packaging verified in a scratch venv (`pip install .` →
+  `smartinvert` runs the sample)
+
 ## Final Verification (2026-11-14)
 
 - **Test suite:** `pytest --cov=smartboard_invert --cov-fail-under=80` →
@@ -133,8 +148,11 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   ADR 0001); use `--dpi 300` for sharper output.
 - Legacy default output name `<stem>_inverted.pdf` kept for single-file runs
   without `--output` (backward compatibility).
-- CI workflow (`.github/workflows/ci.yml`, coverage gate 80 %) is in place,
-  but the repo has no remote configured – CI has not run yet.
+- CI workflow (`.github/workflows/ci.yml`, coverage gate 80 %) runs on the
+  GitHub remote (private repo `univie-henrikjurek/smartinvert`).
+- GUI needs Tkinter (on Debian/Ubuntu: `sudo apt install python3-tk`); not
+  available in the headless dev container, so the GUI was verified by
+  syntax/compile checks only (logic follows the existing thread-safe pattern).
 
 ## Next Step
-None – project is DONE. (If resumed later: push to a remote to activate CI.)
+None – project is DONE. Repo pushed as v0.3.0.
