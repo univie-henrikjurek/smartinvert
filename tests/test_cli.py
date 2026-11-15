@@ -298,3 +298,70 @@ class TestCliInProcess:
         with pytest.raises(SystemExit) as exc:
             cli.main(["--version"])
         assert exc.value.code == 0
+
+
+class TestCropCli:
+    """--crop / --no-crop / config 'crop' (ADR 0003, D4): default off, CLI
+    flags take precedence over the config file."""
+
+    BOARD = (150, 150, 300, 550)  # x, y, w, h in pt
+
+    def _board_pdf(self, tmp_path: Path) -> Path:
+        src = tmp_path / "board.pdf"
+        synth.make_pdf(src, [{"kind": "image", "rect": self.BOARD, "bg": (0, 0, 0)}])
+        return src
+
+    def _first_page_rect(self, pdf: Path):
+        from smartboard_invert.processing import fitz
+
+        doc = fitz.open(str(pdf))
+        try:
+            return doc[0].rect
+        finally:
+            doc.close()
+
+    def test_crop_flag_crops_to_board_rect(self, tmp_path):
+        src = self._board_pdf(tmp_path)
+        outd = tmp_path / "out"
+        result = run_cli("--input", str(src), "--output", str(outd), "--crop")
+        assert result.returncode == 0, result.stderr + result.stdout
+        rect = self._first_page_rect(outd / "board.pdf")
+        assert rect.width == pytest.approx(self.BOARD[2], abs=0.5)
+        assert rect.height == pytest.approx(self.BOARD[3], abs=0.5)
+
+    def test_no_crop_flag_keeps_full_page(self, tmp_path):
+        src = self._board_pdf(tmp_path)
+        outd = tmp_path / "out"
+        result = run_cli("--input", str(src), "--output", str(outd), "--no-crop")
+        assert result.returncode == 0, result.stderr + result.stdout
+        rect = self._first_page_rect(outd / "board.pdf")
+        assert rect.width == pytest.approx(595, abs=0.5)
+        assert rect.height == pytest.approx(842, abs=0.5)
+
+    def test_config_crop_true_crops(self, tmp_path):
+        src = self._board_pdf(tmp_path)
+        outd = tmp_path / "out"
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"crop": true}')
+        result = run_cli("--input", str(src), "--output", str(outd), "--config", str(cfg))
+        assert result.returncode == 0, result.stderr + result.stdout
+        rect = self._first_page_rect(outd / "board.pdf")
+        assert rect.width == pytest.approx(self.BOARD[2], abs=0.5)
+        assert rect.height == pytest.approx(self.BOARD[3], abs=0.5)
+
+    def test_cli_crop_beats_config_no_crop(self, tmp_path):
+        """An explicit --crop flag beats {"crop": false} in the config."""
+        src = self._board_pdf(tmp_path)
+        outd = tmp_path / "out"
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"crop": false}')
+        result = run_cli("--input", str(src), "--output", str(outd), "--config", str(cfg), "--crop")
+        assert result.returncode == 0, result.stderr + result.stdout
+        rect = self._first_page_rect(outd / "board.pdf")
+        assert rect.width == pytest.approx(self.BOARD[2], abs=0.5)
+        assert rect.height == pytest.approx(self.BOARD[3], abs=0.5)
+
+    def test_resolve_options_default_crop_false(self):
+        args = cli.build_parser().parse_args([])
+        opts = cli.resolve_options(args, {})
+        assert opts["crop"] is False

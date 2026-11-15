@@ -97,6 +97,39 @@ gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
   fresh clone (24/24 commits by Henrik Jurek, no placeholder e-mail left in
   any blob, no tokens or keys anywhere).
 
+**ADR 0003 – crop to board rect (branch `feature/crop-to-board`, 2026-11-15,
+not yet merged; no version bump – 0.5.0 is reserved for
+`feature/color-options`):**
+- Implemented per spec: post-stage `_save_cropped()` in `pdfpipeline.py`
+  (in-memory round-trip, `show_pdf_page` + `clip`, vector-exact 1:1),
+  `--crop`/`--no-crop` (CLI + JSON config key), GUI checkbox, default off
+  (page-faithful, unchanged). Real runs verified (with `--crop`:
+  board-sized page 299.4×821.4 pt; default: A4 595×842 pt).
+- Key design facts: detection never runs on rotated pages (A-11) → rotated
+  pages keep full size automatically; defensive `remove_rotation()` branch
+  for contract violations; no board anywhere → page-faithful output +
+  WARNING (never an empty file); `rect_pt` stored on `PageResult` before the
+  `do_something` fork so `--no-invert --crop` works too.
+- Tests: 108 passed + 1 module skip (new `tests/test_gui.py`, headless has
+  no tkinter) — geometry (±0.5 pt), pixel equivalence vs. a separate
+  `crop=False` run (2-px-eroded interior max == 0, all 3 methods),
+  rotation mixed-doc, no-board fallback, `crop=False` regression, CLI/
+  config plumbing, derotation-matrix unit tests. Coverage 89.72 % (gate 80).
+- Review: 0 critical / 0 moderate. Fixed pre-commit: stale test NOTE
+  (after ADR correction), stale STATUS test count, `detection.rect is not
+  None` guard. Known debt (small, documented): GUI label German in an
+  otherwise English UI (ADR-specified, consistent with the color-options
+  branch decision).
+- ADR correction (2026-11-15): the D2 r=90 reference formula/value in the
+  first draft confounded x and y (350×350 square for a 200×350 rect);
+  corrected to `u = (v.y0, H−v.x1, v.y1, H−v.x0)`, empirically verified.
+  Production code unaffected (uses `remove_rotation()`, not the formula).
+- Gaps in the task text, resolved during implementation: (1) the README had
+  no config-file section in the v0.4.1 state → a minimal one was added to
+  document the new `crop` key (bool); (2) the stated window height
+  `660x690 → 660x760` did not match the actual `660x560` → the stated delta
+  (+70 px, "one line more") was applied → `660x630`.
+
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
   (zero prerequisites, ~150–200 MB) for releases — ultimate comfort for

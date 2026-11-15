@@ -495,3 +495,360 @@ def test_invert_disabled_copies_page(tmp_path):
     assert page.method == "copy"
     a, b = renders(src, dst)
     assert cv2.absdiff(a[0], b[0]).max() == 0
+
+
+# --- crop post-stage (ADR 0003) ----------------------------------------------
+
+
+def assert_crop_matches_faithful(
+    crop_img: np.ndarray,
+    faith_img: np.ndarray,
+    rect_px,
+    out_w: float = None,
+    out_h: float = None,
+) -> None:
+    """Compare one cropped page render with the rect slice of the faithful
+    (crop=False) render of the same page at the same dpi (ADR 0003, D1/D5).
+
+    * The render shape must equal the cropped page size in points at ``DPI``
+      (±1 px for MuPDF's MediaBox rounding).
+    * The 2-px-eroded inner area must be pixel-identical (max diff 0).
+    * The full area may only differ in the ≤1-px boundary resampling phase:
+      mean diff < 0.5 and < 1 % of the pixels differing.
+    """
+    if out_w is not None and out_h is not None:
+        exp_h = round(out_h * DPI / 72)
+        exp_w = round(out_w * DPI / 72)
+        assert crop_img.shape[0] == pytest.approx(exp_h, abs=1), (
+            f"crop render height {crop_img.shape[0]} != expected {exp_h} (±1 px)"
+        )
+        assert crop_img.shape[1] == pytest.approx(exp_w, abs=1), (
+            f"crop render width {crop_img.shape[1]} != expected {exp_w} (±1 px)"
+        )
+    x0, y0 = int(rect_px[0]), int(rect_px[1])
+    h, w = crop_img.shape[:2]
+    slice_img = faith_img[y0 : y0 + h, x0 : x0 + w]
+    assert slice_img.shape == crop_img.shape, (
+        f"faithful slice shape {slice_img.shape} != crop render shape {crop_img.shape}"
+    )
+    diff = cv2.absdiff(crop_img, slice_img)
+    inner_max = int(diff[2:-2, 2:-2].max())
+    assert inner_max == 0, f"eroded 2px inner must be pixel-identical (max diff {inner_max})"
+    mean = float(diff.mean())
+    assert mean < 0.5, f"full-region mean diff {mean} >= 0.5"
+    frac = float((diff.max(axis=2) > 0).mean())
+    assert frac < 0.01, f"{frac:.4%} of the pixels differ (>= 1 %)"
+
+
+class TestCropGeometry:
+    """crop=True: board pages are re-wrapped to the board rect, pages without
+    a board stay full; page count and order are preserved (ADR 0003, D1/D3)."""
+
+    PAGES = [
+        {"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)},
+        {"kind": "vector", "rect": (300, 100, 200, 500), "bg": (40, 40, 45)},
+        {"kind": "blank", "marks": []},
+    ]
+
+    @pytest.fixture
+    def run(self, tmp_path):
+        src, dst, truths, result = process(tmp_path, self.PAGES, crop=True)
+        return src, dst, truths, result
+
+    def test_page_count_and_order_preserved(self, run):
+        src, dst, truths, result = run
+        assert len(result.pages) == 3
+        doc = fitz.open(str(dst))
+        try:
+            assert doc.page_count == 3
+        finally:
+            doc.close()
+        imgs = pdf_to_images(dst, dpi=DPI)
+        assert len(imgs) == 3
+        # The order is pinned by per-page size + content: page 0 = inverted
+        # image board, page 1 = inverted vector board, page 2 = untouched
+        # blank page (still white).
+        gray = [cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) for im in imgs]
+        assert gray[0].mean() > 100  # dark board inverted -> mostly light
+        assert gray[1].mean() > 100  # dark vector board inverted -> mostly light
+        assert gray[2].mean() > 245  # blank page: still white
+
+    def test_output_rects_match_board_rects(self, run):
+        src, dst, truths, result = run
+        doc = fitz.open(str(dst))
+        try:
+            r0, r1, r2 = (doc[i].rect for i in range(3))
+        finally:
+            doc.close()
+        # page 0: image board (150,150,300,550) -> (0,0,300,550) ±0.5 pt
+        assert r0.x0 == pytest.approx(0, abs=0.5)
+        assert r0.y0 == pytest.approx(0, abs=0.5)
+        assert r0.width == pytest.approx(300, abs=0.5)
+        assert r0.height == pytest.approx(550, abs=0.5)
+        # page 1: vector board 200x500 (position irrelevant after the crop)
+        assert r1.x0 == pytest.approx(0, abs=0.5)
+        assert r1.y0 == pytest.approx(0, abs=0.5)
+        assert r1.width == pytest.approx(200, abs=0.5)
+        assert r1.height == pytest.approx(500, abs=0.5)
+        # page 2: no board -> full A4, unchanged
+        assert r2 == fitz.Rect(0, 0, A4_W, A4_H)
+        # and exactly the *detected* rect (floats passed through, no rounding)
+        for i, rect in enumerate((r0, r1)):
+            pr = result.pages[i]
+            assert rect.width == pytest.approx(pr.rect_pt[2] - pr.rect_pt[0], abs=0.5)
+            assert rect.height == pytest.approx(pr.rect_pt[3] - pr.rect_pt[1], abs=0.5)
+
+    def test_cropped_flags(self, run):
+        src, dst, truths, result = run
+        assert [p.cropped for p in result.pages] == [True, True, False]
+
+    def test_summary_reports_cropped_pages(self, run):
+        src, dst, truths, result = run
+        s = result.summary()
+        assert "cropped to board rect" in s
+        assert "2 cropped" in s
+
+
+class TestCropPixelEquivalence:
+    """The crop render of a board page must match the rect slice of a
+    SEPARATE faithful (crop=False) run on the same input (ADR 0003, D1:
+    vector-exact re-wrap, no re-rasterization).  Covers all three output
+    methods: image-replace, rerasterize, copy (detected, untransformed)."""
+
+    PAGES = [
+        {"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)},
+        {"kind": "vector", "rect": (300, 100, 200, 500), "bg": (40, 40, 45)},
+        {"kind": "blank", "marks": []},
+    ]
+
+    @pytest.fixture
+    def runs(self, tmp_path):
+        src = tmp_path / "in.pdf"
+        truths = make_pdf(src, self.PAGES)
+        dst_crop = tmp_path / "crop.pdf"
+        dst_faith = tmp_path / "faithful.pdf"
+        res_crop = process_pdf(src, dst_crop, dpi=DPI, crop=True)
+        res_faith = process_pdf(src, dst_faith, dpi=DPI, crop=False)
+        return src, dst_crop, dst_faith, truths, res_crop, res_faith
+
+    @pytest.mark.parametrize(
+        "page_index, method",
+        [(0, "image-replace"), (1, "rerasterize")],
+        ids=["image-replace", "rerasterize"],
+    )
+    def test_crop_render_matches_faithful_slice(self, runs, page_index, method):
+        src, dst_crop, dst_faith, truths, res_crop, _ = runs
+        pr = res_crop.pages[page_index]
+        assert pr.detected and pr.cropped
+        assert pr.method == method
+        crop_imgs = pdf_to_images(dst_crop, dpi=DPI)
+        faith_imgs = pdf_to_images(dst_faith, dpi=DPI)
+        doc = fitz.open(str(dst_crop))
+        try:
+            out_rect = doc[page_index].rect
+        finally:
+            doc.close()
+        assert_crop_matches_faithful(
+            crop_imgs[page_index],
+            faith_imgs[page_index],
+            pr.rect_px,
+            out_w=out_rect.width,
+            out_h=out_rect.height,
+        )
+
+    def test_crop_render_copy_method_matches_faithful(self, tmp_path):
+        """Third method: detected but untransformed page (invert off) ->
+        'copy'; it is still cropped and still pixel-equivalent."""
+        pages = [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}]
+        src = tmp_path / "in.pdf"
+        make_pdf(src, pages)
+        no_transform = dict(invert=False, apply_clahe=False, clean=False)
+        res_crop = process_pdf(src, tmp_path / "crop.pdf", dpi=DPI, crop=True, **no_transform)
+        process_pdf(src, tmp_path / "faithful.pdf", dpi=DPI, crop=False, **no_transform)
+        pr = res_crop.pages[0]
+        assert pr.detected and pr.method == "copy" and pr.cropped
+        crop_imgs = pdf_to_images(tmp_path / "crop.pdf", dpi=DPI)
+        faith_imgs = pdf_to_images(tmp_path / "faithful.pdf", dpi=DPI)
+        doc = fitz.open(str(tmp_path / "crop.pdf"))
+        try:
+            out_rect = doc[0].rect
+        finally:
+            doc.close()
+        assert_crop_matches_faithful(
+            crop_imgs[0],
+            faith_imgs[0],
+            pr.rect_px,
+            out_w=out_rect.width,
+            out_h=out_rect.height,
+        )
+
+
+class TestCropRotation:
+    """Mixed doc: the /Rotate=90 page (A-11: detection never runs on rotated
+    pages) stays full and pixel-identical; the board page is cropped
+    (ADR 0003, D1)."""
+
+    @pytest.fixture
+    def mixed(self, tmp_path):
+        src = tmp_path / "rot_mixed.pdf"
+        doc = fitz.open()
+        # page 0: board image + /Rotate 90 (same fixture as
+        # test_rotated_page_copied_unchanged)
+        page = doc.new_page(width=A4_W, height=A4_H)
+        img = synth.board_image(600, 1100, bg=(15, 15, 15), text=False)
+        ok, png = cv2.imencode(".png", img)
+        assert ok
+        page.insert_image(fitz.Rect(150, 200, 450, 500), stream=png.tobytes())
+        page.set_rotation(90)
+        # page 1: image board (150, 150, 300, 550)
+        page = doc.new_page(width=A4_W, height=A4_H)
+        img = synth.board_image(600, 1100, bg=(0, 0, 0), text=True, seed=0)
+        ok, png = cv2.imencode(".png", img)
+        assert ok
+        page.insert_image(fitz.Rect(150, 150, 450, 700), stream=png.tobytes())
+        doc.save(str(src))
+        doc.close()
+        res_crop = process_pdf(src, tmp_path / "crop.pdf", dpi=DPI, crop=True)
+        process_pdf(src, tmp_path / "faithful.pdf", dpi=DPI, crop=False)
+        return src, tmp_path / "crop.pdf", tmp_path / "faithful.pdf", res_crop
+
+    def test_rotated_page_copied_full_and_pixel_identical(self, mixed):
+        src, dst_crop, _, res_crop = mixed
+        p0 = res_crop.pages[0]
+        assert p0.detected is False
+        assert p0.cropped is False
+        doc = fitz.open(str(dst_crop))
+        try:
+            r0 = doc[0].rect
+            rot0 = doc[0].rotation
+        finally:
+            doc.close()
+        # full A4 in the visual (rotated) orientation, /Rotate preserved
+        assert rot0 == 90
+        assert r0.width == pytest.approx(A4_H, abs=0.5)  # 842
+        assert r0.height == pytest.approx(A4_W, abs=0.5)  # 595
+        a = pdf_to_images(src, dpi=DPI)
+        b = pdf_to_images(dst_crop, dpi=DPI)
+        assert cv2.absdiff(a[0], b[0]).max() == 0  # pixel-identical to input
+
+    def test_board_page_cropped_and_pixel_equivalent(self, mixed):
+        src, dst_crop, dst_faith, res_crop = mixed
+        p1 = res_crop.pages[1]
+        assert p1.detected is True
+        assert p1.cropped is True
+        crop_imgs = pdf_to_images(dst_crop, dpi=DPI)
+        faith_imgs = pdf_to_images(dst_faith, dpi=DPI)
+        doc = fitz.open(str(dst_crop))
+        try:
+            r1 = doc[1].rect
+        finally:
+            doc.close()
+        assert r1.width == pytest.approx(300, abs=0.5)
+        assert r1.height == pytest.approx(550, abs=0.5)
+        assert_crop_matches_faithful(
+            crop_imgs[1], faith_imgs[1], p1.rect_px, out_w=r1.width, out_h=r1.height
+        )
+
+
+class TestCropNoBoard:
+    def test_blank_doc_stays_page_faithful(self, tmp_path, caplog):
+        """No board on any page: output is the page-faithful document
+        (never an empty file) + a summary warning (ADR 0003, D1)."""
+        pages = [{"kind": "blank", "marks": [(100, 100, 20, 40), (200, 400, 20, 40)]}]
+        src = tmp_path / "in.pdf"
+        make_pdf(src, pages)
+        dst = tmp_path / "out.pdf"
+        with caplog.at_level("WARNING", logger="smartboard_invert.pdfpipeline"):
+            result = process_pdf(src, dst, dpi=DPI, crop=True)
+        assert len(result.pages) == 1
+        assert result.pages[0].detected is False
+        assert result.pages[0].cropped is False
+        doc = fitz.open(str(dst))
+        try:
+            assert doc.page_count == 1
+            r = doc[0].rect
+        finally:
+            doc.close()
+        assert r.width == pytest.approx(A4_W, abs=0.5)
+        assert r.height == pytest.approx(A4_H, abs=0.5)
+        a = pdf_to_images(src, dpi=DPI)
+        b = pdf_to_images(dst, dpi=DPI)
+        assert cv2.absdiff(a[0], b[0]).max() == 0  # pixel-identical output page
+        assert any("no page has a detected board" in r.message for r in caplog.records)
+        assert dst.is_file() and dst.stat().st_size > 0
+
+    def test_mixed_doc_warns_per_no_board_page(self, tmp_path, caplog):
+        """Each no-board page of a mixed doc gets its own 'copied in full'
+        warning; the board page is cropped (ADR 0003, D1)."""
+        pages = [
+            {"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)},
+            {"kind": "blank", "marks": [(100, 100, 20, 40)]},
+        ]
+        src = tmp_path / "in.pdf"
+        make_pdf(src, pages)
+        with caplog.at_level("WARNING", logger="smartboard_invert.pdfpipeline"):
+            result = process_pdf(src, tmp_path / "out.pdf", dpi=DPI, crop=True)
+        assert result.pages[0].cropped is True
+        assert result.pages[1].cropped is False
+        full = [r for r in caplog.records if "copied in full" in r.message]
+        assert len(full) == 1
+        assert "Page 2" in full[0].message
+
+
+class TestCropRegression:
+    def test_default_run_and_explicit_no_crop_are_identical(self, tmp_path):
+        """crop=False (the default) must stay the unchanged page-faithful
+        path (ADR 0003, D5): rendered pages pixel-identical to an explicit
+        crop=False run.  (The remaining regression check – all pre-existing
+        tests – is the full suite run.)"""
+        pages = [
+            {"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)},
+            {"kind": "vector", "rect": (300, 100, 200, 500), "bg": (40, 40, 45)},
+            {"kind": "blank", "marks": [(100, 100, 20, 40)]},
+        ]
+        src = tmp_path / "in.pdf"
+        make_pdf(src, pages)
+        process_pdf(src, tmp_path / "default.pdf", dpi=DPI)  # crop default
+        process_pdf(src, tmp_path / "nocrop.pdf", dpi=DPI, crop=False)
+        a = pdf_to_images(tmp_path / "default.pdf", dpi=DPI)
+        b = pdf_to_images(tmp_path / "nocrop.pdf", dpi=DPI)
+        assert len(a) == len(b) == 3
+        for i in range(3):
+            assert a[i].shape == b[i].shape
+            assert cv2.absdiff(a[i], b[i]).max() == 0
+
+
+class TestCropDefensiveRotationMath:
+    """ADR 0003, D2 (defensive branch): ``rect * page.derotation_matrix`` maps
+    a visual-space rect back into the unrotated page space.
+
+    The ADR's r=90 formula/value was corrected on 2026-11-15 (the original
+    draft confounded x and y, yielding a 350x350 square for a 200x350 rect –
+    geometrically impossible).  The values asserted here match the corrected
+    ADR (D2) and were independently verified against PyMuPDF's
+    ``derotation_matrix`` and the ADR's own documentation example
+    ("unrotiert (0,0) -> visual (842,0)").
+    """
+
+    @pytest.mark.parametrize(
+        ("rotation", "expected"),
+        [
+            (90, (50.0, 542.0, 400.0, 742.0)),
+            (180, (295.0, 442.0, 495.0, 792.0)),
+            (270, (195.0, 100.0, 545.0, 300.0)),
+        ],
+    )
+    def test_derotation_matrix_maps_visual_to_unrotated(self, tmp_path, rotation, expected):
+        src = tmp_path / f"rot_{rotation}.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=A4_W, height=A4_H)
+        page.set_rotation(rotation)
+        doc.save(str(src))
+        doc.close()
+        doc = fitz.open(str(src))
+        try:
+            u = fitz.Rect(100, 50, 300, 400) * doc[0].derotation_matrix
+        finally:
+            doc.close()
+        for got, exp in zip((u.x0, u.y0, u.x1, u.y1), expected):
+            assert got == pytest.approx(exp, abs=1e-6)

@@ -9,6 +9,10 @@ board image) and writes a new PDF in which:
 * the detected smartboard rectangle is inverted strictly inside its original
   position (never moved, never cropped).
 
+With ``crop=True`` a final post-stage re-wraps the document so every page
+with a detected board is sized to exactly that rectangle (ADR 0003); pages
+without a board keep their full size.
+
 Three output methods exist per page (see ADR 0001, D2):
 
 ``copy``
@@ -60,6 +64,8 @@ class PageResult:
     #: Verification numbers (outside_max_diff / outside_mean_diff /
     #: inside_mean_diff / max_diff) – see ADR 0001, D3.
     verification: dict = field(default_factory=dict)
+    #: True if the optional crop post-stage (ADR 0003) cropped this page.
+    cropped: bool = False
 
 
 @dataclass
@@ -72,10 +78,14 @@ class ProcessResult:
 
     def summary(self) -> str:
         detected = sum(1 for p in self.pages if p.detected)
-        return (
+        cropped = sum(1 for p in self.pages if p.cropped)
+        s = (
             f"{self.output_path.name}: {len(self.pages)} page(s), "
             f"{detected} with smartboard region"
         )
+        if cropped > 0:
+            s += f", {cropped} cropped to board rect"
+        return s
 
 
 def process_pdf(
@@ -85,6 +95,7 @@ def process_pdf(
     invert: bool = True,
     apply_clahe: bool = False,
     clean: bool = False,
+    crop: bool = False,
     debug_dir: Optional["str | Path"] = None,
     progress: Optional[ProgressCallback] = None,
 ) -> ProcessResult:
@@ -102,6 +113,11 @@ def process_pdf(
     invert / apply_clahe / clean:
         Options for the in-region transformation (strict ``255 − v``
         inversion is the default behaviour).
+    crop:
+        When True, the final output is re-wrapped so every page with a
+        detected board is sized to exactly that rectangle; pages without a
+        board (incl. all rotated pages, A-11) keep their full size.
+        Default False (page-faithful, unchanged).
     debug_dir:
         Optional directory for per-page debug composites
         (original | original+bbox | result).
@@ -151,7 +167,10 @@ def process_pdf(
             result.pages.append(page_result)
             if progress is not None:
                 progress(pno + 1, total)
-        out_doc.save(str(output_path), garbage=3, deflate=True)
+        if crop:
+            _save_cropped(out_doc, output_path, result)
+        else:
+            out_doc.save(str(output_path), garbage=3, deflate=True)
     finally:
         # Close both documents on every path (including errors).
         out_doc.close()
@@ -228,6 +247,20 @@ def _process_page(
         message=detection.message,
     )
 
+    # Store the detected rect (render + page coordinates) on the PageResult
+    # whenever it exists – independent of the transformation – so that the
+    # optional crop post-stage (ADR 0003) can use it.
+    if detection.found and detection.rect is not None:
+        rect_px = detection.rect
+        rect_pt = (
+            rect_px[0] * scale_x,
+            rect_px[1] * scale_y,
+            rect_px[2] * scale_x,
+            rect_px[3] * scale_y,
+        )
+        pr.rect_px = rect_px
+        pr.rect_pt = tuple(rect_pt)  # type: ignore[assignment]
+
     do_something = invert or apply_clahe or clean
 
     if not detection.found or not do_something:
@@ -249,15 +282,7 @@ def _process_page(
         _verify_page(new_page, img_orig, None, dpi, pr)
         return pr
 
-    rect_px = detection.rect
-    rect_pt = (
-        rect_px[0] * scale_x,
-        rect_px[1] * scale_y,
-        rect_px[2] * scale_x,
-        rect_px[3] * scale_y,
-    )
-    pr.rect_px = rect_px
-    pr.rect_pt = tuple(rect_pt)  # type: ignore[assignment]
+    # rect_px / rect_pt were stored on pr above (detection.found is True here)
 
     # 2) prefer replacing the board image XObject ---------------------------
     replaced = False
@@ -559,6 +584,80 @@ def _try_image_replace(
         100 * overlap,
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# crop post-stage (ADR 0003)
+# ---------------------------------------------------------------------------
+
+
+def _save_cropped(faithful_doc, output_path: Path, result: ProcessResult) -> None:
+    """Re-wrap the page-faithful output so each page shows only its board rect.
+
+    Post-stage for ``crop=True`` (ADR 0003): pages with a detected board
+    rectangle become new pages of exactly that size (``show_pdf_page`` with
+    ``clip`` – vector-exact, 1:1 mapping because target rect and clip have
+    identical dimensions).  Pages without a board (including all rotated
+    pages, A-11) are copied 1:1 via ``insert_pdf`` (no content loss,
+    ``/Rotate`` preserved).  When no page has a board the result is the
+    unchanged page-faithful document (never an empty file).
+
+    ``faithful_doc`` is serialized and reopened because ``show_pdf_page``
+    requires a *different* document object as source.
+    """
+    src = fitz.open(stream=faithful_doc.write(), filetype="pdf")
+    final = fitz.open()
+    try:
+        for i, pr in enumerate(result.pages):
+            page = src.load_page(i)
+            if pr.detected and pr.rect_pt is not None:
+                if page.rotation:
+                    # Defensive path – by contract (A-11) rect_pt only exists
+                    # on unrotated pages, where visual == unrotated.  If a
+                    # rotated page ever carries a rect (visual coordinates),
+                    # bake the rotation into the throwaway copy first
+                    # (officially recommended before show_pdf_page); the old
+                    # visual coordinates are then unrotated coordinates.
+                    try:
+                        page.remove_rotation()
+                    except Exception as e:
+                        logger.warning(
+                            "Page %d: remove_rotation failed (%s) – page "
+                            "copied in full", i + 1, e,
+                        )
+                        final.insert_pdf(src, from_page=i, to_page=i)
+                        continue
+                # ``clip`` is unrotated-space (ADR 0003, D2); for rotation 0
+                # (the only case with rects) rect_pt is already in that space.
+                clip = fitz.Rect(*pr.rect_pt) & page.rect
+                if clip.width > 0 and clip.height > 0:
+                    new_page = final.new_page(width=clip.width, height=clip.height)
+                    new_page.show_pdf_page(new_page.rect, src, i, clip=clip)
+                    pr.cropped = True
+                    logger.info(
+                        "Page %d: cropped to board rect (%.1f x %.1f pt)",
+                        i + 1, clip.width, clip.height,
+                    )
+                    continue
+                logger.warning(
+                    "Page %d: degenerate crop rect %s – page copied in full",
+                    i + 1, clip,
+                )
+            else:
+                logger.warning(
+                    "Page %d: no board rectangle – page copied in full "
+                    "(not cropped)", i + 1,
+                )
+            final.insert_pdf(src, from_page=i, to_page=i)
+        if not any(p.cropped for p in result.pages):
+            logger.warning(
+                "--crop: no page has a detected board – output stays "
+                "page-faithful"
+            )
+        final.save(str(output_path), garbage=3, deflate=True)
+    finally:
+        final.close()
+        src.close()
 
 
 # ---------------------------------------------------------------------------
