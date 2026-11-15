@@ -90,11 +90,12 @@ gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
   verified from an independent fresh clone: exactly the 25 project files,
   pattern scan clean, CI green (run 43725025521).
 - Authorship unified: the 9 Phase-1/2 commits (and old `pyproject.toml`
-  author fields in history) used the placeholder identity
-  "Smartboard Bot". Rewritten via `git filter-repo`
-  (`--commit-callback` + `--replace-text`) to Henrik Jurek / GitHub noreply
-  e-mail; history force-pushed again and re-verified from a fresh clone
-  (22/22 commits by Henrik Jurek, no placeholder strings left in any blob).
+  author fields in history) used a placeholder bot identity (name
+  "Smartboard Bot" plus a placeholder e-mail). Rewritten via `git
+  filter-repo` (`--commit-callback` + `--replace-text`) to Henrik Jurek /
+  GitHub noreply e-mail; history force-pushed again and re-verified from a
+  fresh clone (24/24 commits by Henrik Jurek, no placeholder e-mail left in
+  any blob, no tokens or keys anywhere).
 
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
