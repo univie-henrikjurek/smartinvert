@@ -144,3 +144,37 @@ Alle Szenarien werden mit **synthetischen** PDFs/Bildern getestet (unabhängig v
 *Phase 2 addendum:* 2026‑11‑14, **Supervisor**
 
 ---
+
+## Phase 3 (2026‑11‑15): Ziel-Hintergrundfarbe & erhaltene Markerfarben
+
+Phase 3 erweitert die In-Region-Transformation, ohne Erkennung, Ausgabemethoden
+(copy/image-replace/rerasterize), Verifikation oder Debug zu ändern: optionales
+lineares Remap auf eine Ziel-Hintergrundfarbe statt strikter `255 − v` sowie die
+Möglichkeit, Markerfarben (z. B. rot/grün für Weggestrichenes/Angehaktes)
+**nicht** zu invertieren. Grundlage:
+[ADR 0002](docs/adr/0002-farbeziele-und-erhaltene-farben.md).
+
+### 3.1 Neue Anforderungen (govern Phase 3)
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P3‑FR‑9** | Ziel-Hintergrundfarbe (`--bg-target`) | Default `complement` = strikt `255 − v` (bit-identisch zu v0.4.1). `R,G,B` (jeweils 0–255): lineares pro-Kanal-Remap `v' = T_c·(255−v)/(255−B_c)`; `B_c` = p25 des Kanals im Remap-Input (nach optionalem CLAHE/clean), geclampt auf `[0, 220]` (Nenner ≥ 35); float32, round-half-up, clip 0–255. Anker: `v = B_c → T_c` (Board-Hintergrund landet exakt auf der Zielfarbe), `v = 255 → 0` (Weiß bleibt Schwarz). |
+| **P3‑FR‑10** | Erhaltene Markerfarben (`--keep-colors`) | Pixel passender Markerfarben behalten ihre **Originalwerte** – Exklusion wird auf dem Original (vor CLAHE/clean/Inversion) berechnet und hat **Vorrang** vor Complement und Remap (letzter Schritt). Maske: Kanaldominanz Δ = 40 und dominanter Kanal ≥ 80 (yellow: R, G ≥ 80, beide > B + 40); OR über die angefragten Farben aus red,green,blue,yellow (unbekannt → Fehler). Default `red,green`; `none` = alles invertieren (v0.4.1-Verhalten). |
+
+### 3.2 Abweichungen (dokumentiert)
+
+| # | Abweichung | Begründung |
+|---|------------|------------|
+| **P3‑D‑1** | **Bewusster Default-Wechsel (breaking):** Default ist jetzt `complement` + `red,green`, d. h. ≠ v0.4.1 (dort: reine `255 − v`, keine Farben erhalten) | User-Entscheidung: sehr dunkle Boards sollen nicht „beige“ wirken (Remap-Option) und rot/grüne Marker (Weggestrichenes, Angehaktes) sollen lesbar bleiben. Exaktes v0.4.1-Verhalten bleibt reproduzierbar und als Regression gesichert: `smartinvert -i in.pdf -o out.pdf --bg-target complement --keep-colors none` → bit-exact `np.bitwise_not`. |
+| **P3‑D‑2** | Neue Config-Keys `bg_target` / `keep_colors` (String, CLI-Syntax: `"complement"` bzw. `"R,G,B"`; `"none"` bzw. Kommasetz aus red,green,blue,yellow) in `REAL_DEFAULTS` + `_CONFIG_TYPES` | Zentrale Parser `parse_bg_target`/`parse_keep_colors` in `cli.py` als einziger Chokepoint für CLI-Flag und JSON-Config; `process_pdf`/`enhance_image[_ex]`/`invert_region` erhalten die Optionen als Keyword-Parameter (Default = v0.4.1-Verhalten). |
+
+Hinweis: Die Annahme **A‑2** („binary/negative output, no colour preservation“)
+ist damit **teilweise ersetzt** — selektive Farb-Erhaltung ist Teil des neuen
+Default-Verhaltens. Blue/yellow und freie `R,G,B`-Ziele bleiben CLI-only; die
+GUI bietet Combobox (Complement/Reinweiß) + Checkboxen „Rot/Grün erhalten“.
+
+---
+
+*Phase 3 addendum:* 2026‑11‑15, **Coder**
+
+---

@@ -1,14 +1,18 @@
 """Smartboard Inversion Package
 
 Detects the rectangular smartboard area inside each PDF page and inverts its
-colours (``255 − v``) strictly inside that rectangle, leaving the surrounding
-page untouched.
+colours strictly inside that rectangle, leaving the surrounding page
+untouched.  By default the inversion is the strict complement (``255 − v``);
+optionally the background can be remapped to a target colour (``bg_target``,
+ADR 0002) and selected marker colours (``keep_colors``) are preserved
+unchanged.
 
 Public API:
     - :func:`detect_smartboard_region` / :class:`DetectionResult`
     - :func:`process_pdf` / :class:`ProcessResult` / :class:`PageResult`
     - :func:`pdf_to_images`, :func:`invert_region`,
       :func:`enhance_image` / :func:`enhance_image_ex`, :func:`images_to_pdf`
+    - :func:`invert_or_remap`, :func:`color_mask` (core pixel operation)
     - :class:`SmartboardError`
 """
 
@@ -16,14 +20,16 @@ from .detection import DetectionResult, Rect, detect_smartboard_region
 from .pdfpipeline import PageResult, ProcessResult, process_pdf
 from .processing import (
     SmartboardError,
+    color_mask,
     enhance_image,
     enhance_image_ex,
     images_to_pdf,
+    invert_or_remap,
     invert_region,
     pdf_to_images,
 )
 
-__version__ = "0.4.1"  # keep in sync with the `version` in pyproject.toml
+__version__ = "0.5.0"  # keep in sync with the `version` in pyproject.toml
 
 __all__ = [
     "DetectionResult",
@@ -33,9 +39,11 @@ __all__ = [
     "ProcessResult",
     "process_pdf",
     "SmartboardError",
+    "color_mask",
     "enhance_image",
     "enhance_image_ex",
     "images_to_pdf",
+    "invert_or_remap",
     "invert_region",
     "pdf_to_images",
     "__version__",

@@ -32,14 +32,14 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import AbstractSet, Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 from . import processing
 from .detection import DetectionResult, Rect, clamp_rect, detect_smartboard_region, rect_overlap_fraction
-from .processing import SmartboardError, fitz
+from .processing import KEEPABLE_COLORS, SmartboardError, fitz
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,9 @@ def process_pdf(
     crop: bool = False,
     debug_dir: Optional["str | Path"] = None,
     progress: Optional[ProgressCallback] = None,
+    *,
+    bg_target: Optional[Tuple[int, int, int]] = None,
+    keep_colors: AbstractSet[str] = frozenset(),
 ) -> ProcessResult:
     """Process a whole PDF (see module docstring).
 
@@ -123,15 +126,33 @@ def process_pdf(
         (original | original+bbox | result).
     progress:
         Optional callback invoked after each page: ``(n, total)``.
+    bg_target:
+        Target background of the board as ``(R, G, B)`` (ints 0–255) for a
+        linear per-channel remap, or ``None`` for the strict ``255 − v``
+        complement (default; bit-identical to v0.4.1).
+    keep_colors:
+        Marker colours (subset of :data:`processing.KEEPABLE_COLORS`) whose
+        pixels keep their original values – exclusion takes precedence over
+        complement/remap.  Empty (default) = everything is transformed
+        (v0.4.1 behaviour).
 
     Raises
     ------
     SmartboardError
-        On invalid paths, unreadable PDFs or page-level failures.
+        On invalid paths, unreadable PDFs, invalid option values or
+        page-level failures.
     """
     if not 20 <= int(dpi) <= 600:
         raise SmartboardError(f"dpi must be between 20 and 600 (got {dpi})")
     dpi = int(dpi)
+
+    unknown = set(keep_colors) - KEEPABLE_COLORS
+    if unknown:
+        raise SmartboardError(
+            f"unknown color(s) in keep_colors: {', '.join(sorted(unknown))} "
+            f"(allowed: {', '.join(sorted(KEEPABLE_COLORS))})"
+        )
+    bg_target = processing.validate_bg_target(bg_target)
 
     input_path = Path(input_path).expanduser().resolve()
     output_path = Path(output_path).expanduser().resolve()
@@ -163,6 +184,8 @@ def process_pdf(
                 clean=clean,
                 debug_dir=debug_dir,
                 stem=input_path.stem,
+                bg_target=bg_target,
+                keep_colors=keep_colors,
             )
             result.pages.append(page_result)
             if progress is not None:
@@ -203,6 +226,8 @@ def _process_page(
     clean: bool,
     debug_dir: Optional[Path],
     stem: str,
+    bg_target: Optional[Tuple[int, int, int]],
+    keep_colors: AbstractSet[str],
 ) -> PageResult:
     page = src.load_page(pno)
     page_rect = page.rect
@@ -297,15 +322,23 @@ def _process_page(
             invert=invert,
             apply_clahe=apply_clahe,
             clean=clean,
+            bg_target=bg_target,
+            keep_colors=keep_colors,
         )
         if not replaced:
             # fall back: clear the copied content, embed the full-page image
             _clear_page(new_page, out_doc)
-            processed = _transform_render(img_orig, rect_px, invert, apply_clahe, clean)
+            processed = _transform_render(
+                img_orig, rect_px, invert, apply_clahe, clean,
+                bg_target=bg_target, keep_colors=keep_colors,
+            )
             _embed_full_page_image(new_page, page_rect, processed)
     else:
         new_page = out_doc.new_page(width=page_rect.width, height=page_rect.height)
-        processed = _transform_render(img_orig, rect_px, invert, apply_clahe, clean)
+        processed = _transform_render(
+            img_orig, rect_px, invert, apply_clahe, clean,
+            bg_target=bg_target, keep_colors=keep_colors,
+        )
         _embed_full_page_image(new_page, page_rect, processed)
 
     pr.method = "image-replace" if replaced else "rerasterize"
@@ -324,16 +357,33 @@ def _process_page(
     return pr
 
 
-def _transform_render(img: np.ndarray, rect: Rect, invert: bool, apply_clahe: bool, clean: bool) -> np.ndarray:
+def _transform_render(
+    img: np.ndarray,
+    rect: Rect,
+    invert: bool,
+    apply_clahe: bool,
+    clean: bool,
+    *,
+    bg_target: Optional[Tuple[int, int, int]] = None,
+    keep_colors: AbstractSet[str] = frozenset(),
+) -> np.ndarray:
     """Apply the in-region transformation to a full-page render."""
     if not (invert or apply_clahe or clean):
         return img.copy()
     x0, y0, x1, y1 = rect
     out = img.copy()
     region = out[y0:y1, x0:x1]
+    # The keep-colour exclusion must be computed on the original (pre-CLAHE/
+    # clean) pixels.
+    region_orig = region.copy() if invert else None
     region = processing._process_region(region, apply_clahe, clean)
     if invert:
-        region = np.bitwise_not(region)
+        region = processing.invert_or_remap(
+            region,
+            original=region_orig,
+            bg_target=bg_target,
+            keep_colors=keep_colors,
+        )
     out[y0:y1, x0:x1] = region
     return out
 
@@ -464,6 +514,8 @@ def _try_image_replace(
     invert: bool,
     apply_clahe: bool,
     clean: bool,
+    bg_target: Optional[Tuple[int, int, int]] = None,
+    keep_colors: AbstractSet[str] = frozenset(),
 ) -> bool:
     """Replace the board image XObject with its inverted version.
 
@@ -557,12 +609,20 @@ def _try_image_replace(
         return False
     x0, y0, x1, y1 = inv_rect
 
-    # Invert only inside the mapped rect, then replace the XObject (PNG:
+    # Transform only inside the mapped rect, then replace the XObject (PNG:
     # lossless, same dimensions).
     region = native[y0:y1, x0:x1]
+    # The keep-colour exclusion must be computed on the original (pre-CLAHE/
+    # clean) pixels.
+    region_orig = region.copy() if invert else None
     region = processing._process_region(region, apply_clahe, clean)
     if invert:
-        region = np.bitwise_not(region)
+        region = processing.invert_or_remap(
+            region,
+            original=region_orig,
+            bg_target=bg_target,
+            keep_colors=keep_colors,
+        )
     processed = native.copy()
     processed[y0:y1, x0:x1] = region
 

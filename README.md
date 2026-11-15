@@ -48,8 +48,11 @@ untouched.*
    margin, contrast, and a second-largest-candidate ratio select the board.
    Details: [ADR 0001](docs/adr/0001-robuste-erkennung-und-seitentreue-ausgabe.md).
 2. **Transformation** — inside the rectangle only: strict inversion
-   (`255 − v`), plus optional (legacy) CLAHE contrast enhancement and
-   morphological cleaning.
+   (`255 − v`) or a linear per-channel remap onto a target background colour
+   (`--bg-target R,G,B`, e.g. pure white `255,255,255` for dark boards),
+   plus optional (legacy) CLAHE contrast enhancement and morphological
+   cleaning. Marker colours can be preserved and left un-inverted
+   (`--keep-colors`; default `red,green`, since v0.5.0).
 3. **Page-faithful output** — the page is reproduced with its original size and
    one of the three strategies above. Optionally (`--crop` or the GUI
    checkbox, ADR 0003) the finished document is re-wrapped afterwards so every
@@ -104,36 +107,49 @@ After the first run the tool is also available directly as the
 ```
 Usage: smartinvert -i INPUT [-o OUTPUT] [options]
 
-  -i, --input PATH       Input PDF file or directory (default: inputs/)
-  -o, --output PATH      Output file (file input) or directory
-                         (default: outputs/, same file names)
-      --dpi N            Rendering DPI for detection and output
-                         (default: 150, range 20–600)
+  -i, --input PATH        Input PDF file or directory (default: inputs/)
+  -o, --output PATH       Output file (file input) or directory
+                          (default: outputs/, same file names)
+      --dpi N             Rendering DPI for detection and output
+                          (default: 150, range 20–600)
       --invert / --no-invert
-                         Invert the detected region (default: enabled)
+                          Invert the detected region (default: enabled)
       --clahe / --no-clahe
-                         CLAHE contrast enhancement inside the region
-                         (legacy, default: off)
+                          CLAHE contrast enhancement inside the region
+                          (legacy, default: off)
       --clean / --no-clean
-                         Morphological cleaning inside the region
-                         (legacy, default: off)
-      --crop / --no-crop Size each output page to its detected board
-                         rectangle; pages without a board keep their full
-                         size (default: off – page-faithful output)
-      --debug            Write per-page debug composites to <output>/debug/
-      --config PATH      Optional JSON config file; CLI flags take precedence
-  -v / -vv               Log level INFO / DEBUG
-      --version          Show version and exit
+                          Morphological cleaning inside the region
+                          (legacy, default: off)
+      --crop / --no-crop  Size each output page to its detected board
+                          rectangle; pages without a board keep their full
+                          size (default: off – page-faithful output)
+      --bg-target SPEC    Target background of the board: 'complement'
+                          (strict 255 − v) or 'R,G,B' (each 0–255), e.g.
+                          '255,255,255' = pure white
+                          (default: complement)
+      --keep-colors LIST  Marker colours left un-inverted (comma-separated
+                          from red,green,blue,yellow; 'none' = invert
+                          everything). Default: red,green
+      --debug             Write per-page debug composites to <output>/debug/
+      --config PATH       Optional JSON config file; CLI flags take precedence
+  -v / -vv                Log level INFO / DEBUG
+      --version           Show version and exit
 ```
 
 Exit code: `0` on success, `1` if at least one file failed (a batch continues
 past failing files). Run `smartinvert --help` for the full reference.
 
+> Since v0.5.0 the default is `--keep-colors red,green` (red/green marker
+> colours are preserved). For the exact v0.4.1 behaviour use
+> `--bg-target complement --keep-colors none`.
+
 ## Config file
 
 `--config PATH` loads a JSON file holding any of the options `input`,
-`output`, `dpi`, `invert`, `clahe`, `clean`, `crop` (bool, default off) and
-`debug`; explicit CLI flags take precedence over config values.
+`output`, `dpi`, `invert`, `clahe`, `clean`, `crop`, `bg_target`,
+`keep_colors` and `debug`. `null` or a missing key uses the default, and
+explicit CLI flags always take precedence. String options use CLI syntax
+(e.g. `"bg_target": "255,255,255"`, `"keep_colors": "red,green"`).
 
 ## GUI
 
@@ -151,8 +167,14 @@ start.bat         # Windows
   `<name>_inverted.pdf` next to the input (folder input requires an output
   folder)
 - **DPI** slider (default 150; raise to 300 for sharper results)
-- **Crop to board** checkbox — sizes each page with a detected board to
-  exactly that rectangle, removing the surrounding page margin (default: off)
+- **Auf Board zuschneiden (Rand entfernen)** — sizes each page with a
+  detected board to exactly that rectangle, removing the surrounding page
+  margin (default: off)
+- **Zielhintergrund** — target background of the board: *Complement (255 − v)*
+  (default) or *Reinweiß (255,255,255)*
+- **Rot erhalten** / **Grün erhalten** — keep the red/green marker colours
+  un-inverted (both on by default; blue/yellow and free `R,G,B` targets are
+  CLI-only)
 - **Preview first page** — original and processed page side by side
 - **Run** — processes with a progress bar and reports the output location
 

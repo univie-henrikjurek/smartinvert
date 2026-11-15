@@ -26,7 +26,7 @@ from smartboard_invert import process_pdf
 from smartboard_invert.processing import SmartboardError, fitz, pdf_to_images
 
 import synth
-from synth import A4_W, A4_H, DPI, changed_bbox, make_pdf, outside_mask
+from synth import A4_W, A4_H, DPI, board_image, changed_bbox, make_pdf, outside_mask, PX_PER_PT
 
 
 def process(tmp_path, pages, **kwargs):
@@ -852,3 +852,185 @@ class TestCropDefensiveRotationMath:
             doc.close()
         for got, exp in zip((u.x0, u.y0, u.x1, u.y1), expected):
             assert got == pytest.approx(exp, abs=1e-6)
+
+# --- Phase 3: bg_target + keep_colors (ADR 0002, P3-FR-9/10) ------------------
+
+
+class TestProcessPdfPhase3Validation:
+    """process_pdf validates bg_target / keep_colors (P3-FR-9/10) before any
+    page processing."""
+
+    @pytest.fixture()
+    def blank_pdf(self, tmp_path):
+        src = tmp_path / "in.pdf"
+        make_pdf(src, [{"kind": "blank", "marks": []}])
+        return src
+
+    def test_unknown_keep_color_raises(self, blank_pdf, tmp_path):
+        with pytest.raises(SmartboardError, match="unknown color"):
+            process_pdf(blank_pdf, tmp_path / "o.pdf", keep_colors={"red", "magenta"})
+
+    @pytest.mark.parametrize(
+        "bg_target",
+        [
+            (255, 255),  # not 3 channels
+            (255, 255, 256),  # > 255
+            (255, 255, -1),  # < 0
+            "255,255,255",  # string is not a sequence of ints
+            (True, 0, 0),  # bool is not an int channel
+        ],
+    )
+    def test_invalid_bg_target_raises(self, blank_pdf, tmp_path, bg_target):
+        with pytest.raises(SmartboardError, match="bg_target"):
+            process_pdf(blank_pdf, tmp_path / "o.pdf", bg_target=bg_target)
+
+    def test_list_bg_target_accepted_and_normalized(self, blank_pdf, tmp_path):
+        """A 3-element list is accepted (normalized to a tuple) – no error."""
+        dst = tmp_path / "o.pdf"
+        result = process_pdf(blank_pdf, dst, dpi=DPI, bg_target=[10, 20, 30])
+        assert dst.is_file()
+        assert len(result.pages) == 1
+
+
+#: Image-kind board 300x550 pt at the default scale 2.0 -> 600x1100 px image.
+NATIVE_W, NATIVE_H = 600, 1100
+#: Markers as ((x, y, w, h) in image px, BGR colour); both inside the board.
+RED_MARK = ((100, 400, 80, 60), (20, 20, 220))  # BGR: red marker
+GREEN_MARK = ((350, 700, 80, 60), (20, 200, 20))  # BGR: green marker
+
+
+def _phase3_pages():
+    """Dark-gray board (~35,30,30 BGR) with white chalk text and red/green
+    marker rectangles (synth ground truth: rect_px/rect_pt of the board)."""
+    return [
+        {
+            "kind": "image",
+            "rect": (150, 150, 300, 550),
+            "bg": (35, 30, 30),
+            "text": True,
+            "seed": 0,
+            "marks": [RED_MARK, GREEN_MARK],
+        }
+    ]
+
+
+def _marker_render_box(mark, rect_pt):
+    """Render-pixel box (at DPI) of a marker drawn in native image pixels."""
+    (mx, my, mw, mh), _color = mark
+    sx = (rect_pt[2] - rect_pt[0]) * PX_PER_PT / NATIVE_W
+    sy = (rect_pt[3] - rect_pt[1]) * PX_PER_PT / NATIVE_H
+    x0 = rect_pt[0] * PX_PER_PT + mx * sx
+    y0 = rect_pt[1] * PX_PER_PT + my * sy
+    return x0, y0, x0 + mw * sx, y0 + mh * sy
+
+
+def test_phase3_remap_to_white_keeps_markers(tmp_path):
+    """P3-FR-9/10 E2E: board remapped onto pure white, chalk dark, red/green
+    markers keep their original colour."""
+    src, dst, truths, result = process(
+        tmp_path, _phase3_pages(), bg_target=(255, 255, 255), keep_colors={"red", "green"}
+    )
+    page = result.pages[0]
+    assert page.detected, page.message
+    assert page.method == "image-replace"
+    a, b = renders(src, dst)
+    gt = truths[0]["rect_px"]
+
+    # (1) board background -> target white (tolerance +/-10 for resampling)
+    strip = b[0][int(gt[1]) + 10 : int(gt[1]) + 60, int(gt[0]) + 50 : int(gt[2]) - 50]
+    assert strip.shape[0] > 0
+    for c in range(3):
+        assert abs(float(strip[..., c].mean()) - 255.0) <= 10
+
+    # (2) white chalk text -> dark
+    inside = ~outside_mask(gt, a[0].shape[:2], inflate=-5)
+    white_in = inside & (cv2.cvtColor(a[0], cv2.COLOR_BGR2GRAY) > 245)
+    assert white_in.sum() > 500, "fixture must contain white text"
+    assert cv2.cvtColor(b[0], cv2.COLOR_BGR2GRAY)[white_in].max() < 80
+
+    # (3) markers keep their original colour: inner pixels strict (+/-5),
+    #     whole mark tolerant to resampling at the edges (mean <= 15)
+    rect_pt = truths[0]["rect_pt"]
+    for mark in (RED_MARK, GREEN_MARK):
+        x0, y0, x1, y1 = _marker_render_box(mark, rect_pt)
+        color = np.asarray(mark[1], dtype=np.int16)
+        inner = b[0][
+            int(y0 + 0.25 * (y1 - y0)) : int(y1 - 0.25 * (y1 - y0)),
+            int(x0 + 0.25 * (x1 - x0)) : int(x1 - 0.25 * (x1 - x0)),
+        ]
+        whole = b[0][int(y0) : int(y1), int(x0) : int(x1)]
+        assert np.abs(inner.astype(np.int16) - color).max() <= 5
+        assert np.abs(whole.astype(np.int16) - color).mean() <= 15
+
+
+def test_phase3_default_complement_transforms_markers(tmp_path):
+    """Same input with v0.4.1 parameters (bg_target=None, keep_colors empty):
+    the markers are NOT kept -> bitwise_not(original).  Proves the effect of
+    the Phase 3 flags (they change the result)."""
+    src, dst, truths, result = process(
+        tmp_path, _phase3_pages(), bg_target=None, keep_colors=frozenset()
+    )
+    page = result.pages[0]
+    assert page.detected, page.message
+    a, b = renders(src, dst)
+    rect_pt = truths[0]["rect_pt"]
+    for mark in (RED_MARK, GREEN_MARK):
+        x0, y0, x1, y1 = _marker_render_box(mark, rect_pt)
+        inner = b[0][
+            int(y0 + 0.25 * (y1 - y0)) : int(y1 - 0.25 * (y1 - y0)),
+            int(x0 + 0.25 * (x1 - x0)) : int(x1 - 0.25 * (x1 - x0)),
+        ]
+        expected = np.bitwise_not(np.asarray(mark[1], dtype=np.uint8)).astype(np.int16)
+        assert np.abs(inner.astype(np.int16) - expected).max() <= 5
+
+
+def test_phase3_bit_exact_v041_regression(tmp_path):
+    """P3-D-1 regression: with the v0.4.1 parameters (bg_target=None,
+    keep_colors=frozenset()) the in-region transformation must stay
+    bit-identical to v0.4.1.  Code inspection: the legacy path in
+    ``processing.invert_or_remap`` is exactly ``np.bitwise_not(region)`` on
+    uint8 (== 255 - v, no float round-trip).
+
+    Verified at the most accessible point – the board image XObject of the
+    image-replace output is bit-wise ``np.bitwise_not`` of the embedded
+    original image (a possible <= 2 px border ring stays untouched because
+    the conservative page-rect -> image-rect mapping clips boundary rows).
+    A second run with the same v0.4.1 parameters renders pixel-identical
+    pages (determinism; the only bytes that differ between the raw PDF files
+    are the random /ID trailer, not the content).
+    """
+    pages = [
+        {"kind": "image", "rect": (150, 150, 300, 550), "bg": (20, 20, 25), "text": True, "seed": 0}
+    ]
+    native = board_image(NATIVE_W, NATIVE_H, bg=(20, 20, 25), text=True, seed=0)
+    src, dst, truths, result = process(tmp_path, pages, bg_target=None, keep_colors=frozenset())
+    page = result.pages[0]
+    assert page.detected, page.message
+    assert page.method == "image-replace"
+    # built-in verification (ADR 0001 D3): nothing outside the detected rect
+    assert page.verification.get("outside_max_diff") == 0
+
+    doc = fitz.open(str(dst))
+    try:
+        infos = doc[0].get_image_info(xrefs=True)
+        assert len(infos) == 1
+        info = doc.extract_image(int(infos[0]["xref"]))
+    finally:
+        doc.close()
+    out_img = cv2.imdecode(np.frombuffer(info["image"], np.uint8), cv2.IMREAD_COLOR)
+    assert out_img is not None and out_img.shape == native.shape
+
+    # interior: bit-exact legacy transformation
+    assert np.array_equal(out_img[2:-2, 2:-2], np.bitwise_not(native)[2:-2, 2:-2])
+    # every NOT transformed pixel (== original; 255 - v has no fixed point)
+    # must lie in the <= 2 px border ring
+    untouched = (out_img == native).all(axis=2)
+    ring = np.ones(native.shape[:2], dtype=bool)
+    ring[2:-2, 2:-2] = False
+    assert not (untouched & ~ring).any()
+
+    # determinism: a second run with the v0.4.1 parameters renders
+    # pixel-identical pages
+    dst2 = tmp_path / "out2.pdf"
+    process_pdf(src, dst2, dpi=DPI, bg_target=None, keep_colors=frozenset())
+    assert np.array_equal(pdf_to_images(dst, dpi=DPI)[0], pdf_to_images(dst2, dpi=DPI)[0])

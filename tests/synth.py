@@ -41,11 +41,16 @@ def board_image(
     text: bool = True,
     border: int = 0,
     seed: int = 0,
+    marks: Sequence[Tuple[Tuple[int, int, int, int], Tuple[int, int, int]]] = (),
 ) -> np.ndarray:
     """Create a synthetic smartboard screenshot (BGR ``uint8``).
 
     A dark background (``bg``), optional white "text" bars (deterministic via
-    ``seed``) and an optional white border inside the image.
+    ``seed``), an optional white border inside the image, and optional marker
+    ``marks``: a list of ``(rect_px, color)`` pairs where ``rect_px`` is
+    ``(x, y, w, h)`` in image pixels (same coordinate space as the existing
+    drawings) and ``color`` is a BGR tuple.  Each mark is drawn as a filled
+    rectangle on top of the board.
     """
     img = np.full((height, width, 3), bg, dtype=np.uint8)
     if border > 0:
@@ -72,6 +77,8 @@ def board_image(
                 )
                 x += length + int(inner_w // 12)
             y += int(inner_h * 0.09)
+    for (x, y, w, h), color in marks:
+        cv2.rectangle(img, (x, y), (x + w - 1, y + h - 1), color, -1)
     return img
 
 
@@ -81,7 +88,8 @@ def make_pdf(path: "str | Path", pages: Sequence[dict]) -> List[dict]:
     Each entry of *pages* is a dict with:
 
     ``{"kind": "image", "rect": (x, y, w, h) in pt, "bg": (b, g, r),
-       "text": bool, "border": int (image px), "scale": float (image px/pt)}``
+       "text": bool, "border": int (image px), "scale": float (image px/pt),
+       "marks": [(rect_px (x, y, w, h) in image px, BGR color), ...]}``
     ``{"kind": "vector", "rect": (x, y, w, h) in pt, "bg": (b, g, r),
        "lines": bool}``
     ``{"kind": "blank", "marks": [(x, y, w, h) in pt, ...]}``
@@ -113,6 +121,7 @@ def make_pdf(path: "str | Path", pages: Sequence[dict]) -> List[dict]:
                     text=bool(spec.get("text", True)),
                     border=border_px,
                     seed=int(spec.get("seed", 0)),
+                    marks=spec.get("marks", ()),
                 )
                 ok, png = cv2.imencode(".png", img)
                 assert ok, "failed to encode synthetic board image"
