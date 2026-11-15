@@ -7,7 +7,7 @@ name = "smartboard-invert"
 version = "0.3.0"  # keep in sync with __version__ in smartboard_invert/__init__.py
 description = "Selective smartboard inversion for PDFs (auto rectangle detection, CLI + simple GUI)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"  # 3.9 is EOL and no longer in GitHub runner images
 license = {text = "MIT"}
 authors = [
     {name = "Henrik Jurek", email = "243551298+univie-henrikjurek@users.noreply.github.com"},
@@ -21,7 +21,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

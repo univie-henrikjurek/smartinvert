@@ -17,7 +17,7 @@ if not defined PY (
     where python >nul 2>nul && set "PY=python"
 )
 if not defined PY (
-    echo error: Python 3.9+ not found. Install it from https://www.python.org/downloads/
+    echo error: Python 3.10+ not found. Install it from https://www.python.org/downloads/
     exit /b 1
 )
 

@@ -36,7 +36,7 @@ unverändert (Warnung). Seiten mit `/Rotate ≠ 0` werden unverändert kopiert.
 
 ## Quickstart (ein Befehl)
 
-Voraussetzung: Python 3.9+ (`python3` im PATH).
+Voraussetzung: Python 3.10+ (`python3` im PATH).
 
 ```bash
 git clone https://github.com/univie-henrikjurek/smartinvert.git
