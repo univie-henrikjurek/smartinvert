@@ -23,7 +23,7 @@ from .processing import (
     pdf_to_images,
 )
 
-__version__ = "0.4.0"  # keep in sync with the `version` in pyproject.toml
+__version__ = "0.4.1"  # keep in sync with the `version` in pyproject.toml
 
 __all__ = [
     "DetectionResult",

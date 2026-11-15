@@ -13,6 +13,7 @@ All heavy work runs in a background thread so the UI stays responsive.
 
 import json
 import logging
+import queue
 import threading
 from pathlib import Path
 from tkinter import (
@@ -24,6 +25,7 @@ from tkinter import (
     Checkbutton,
     IntVar,
     DoubleVar,
+    TclError,
     filedialog,
     messagebox,
     ttk,
@@ -46,6 +48,11 @@ class SmartboardGUI:
         master.title("Smartboard PDF Inverter")
         master.geometry("660x560")
         self.create_widgets()
+        # Thread-safe event queue: worker threads must never touch Tk
+        # widgets directly (tkinter is not thread-safe); they enqueue
+        # callbacks that the main loop executes (see _poll_events).
+        self._events: "queue.Queue" = queue.Queue()
+        master.after(100, self._poll_events)
 
     def create_widgets(self):
         # ---------- File/folder selection ----------
@@ -72,11 +79,21 @@ class SmartboardGUI:
         # ---------- Options ----------
         opts_frame = Frame(self.master)
         opts_frame.pack(fill="x", padx=10, pady=5)
-        # DPI slider
+        # DPI slider (with a live value readout so the position is never a
+        # guess)
         Label(opts_frame, text="DPI:").grid(row=0, column=0, sticky="w")
         self.dpi_var = DoubleVar(value=150)
-        self.dpi_slider = ttk.Scale(opts_frame, from_=50, to=300, orient="horizontal", variable=self.dpi_var)
+        self.dpi_value = Label(opts_frame, text="150", width=4, anchor="e")
+        self.dpi_slider = ttk.Scale(
+            opts_frame,
+            from_=50,
+            to=300,
+            orient="horizontal",
+            variable=self.dpi_var,
+            command=self._on_dpi_change,
+        )
         self.dpi_slider.grid(row=0, column=1, sticky="ew", padx=5)
+        self.dpi_value.grid(row=0, column=2, sticky="w", padx=(4, 0))
         opts_frame.columnconfigure(1, weight=1)
         # Checkboxes
         self.invert_var = IntVar(value=1)
@@ -99,6 +116,10 @@ class SmartboardGUI:
         Button(run_frame, text="Run", command=self.start_processing).pack(side="left")
         self.progress = ttk.Progressbar(run_frame, orient="horizontal", mode="determinate")
         self.progress.pack(fill="x", expand=True, side="left", padx=5)
+
+    def _on_dpi_change(self, _value) -> None:
+        """Keep the DPI value label in sync with the slider."""
+        self.dpi_value.configure(text=str(int(float(self.dpi_var.get()))))
 
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
@@ -210,19 +231,36 @@ class SmartboardGUI:
             "clean": bool(self.clean_var.get()),
         }
         # Disable controls while processing.
-        for child in self.master.winfo_children():
-            child.configure(state="disabled")
+        self._set_controls_state("disabled")
         threading.Thread(
             target=self._process_worker, args=(pdf_path, out_path, options), daemon=True
         ).start()
 
-    def _process_worker(self, pdf_path: str, out_path: Path, options: dict):
-        def on_progress(n: int, total: int):
-            def _update():
-                self.progress["maximum"] = total
-                self.progress["value"] = n
+    def _poll_events(self) -> None:
+        """Main-loop pump that executes UI events queued by worker threads.
 
-            self.master.after(0, _update)
+        tkinter widgets may only be touched from the main thread; calling
+        ``widget.after(ms, func)`` from a worker thread already fails
+        (callback registration happens in the calling thread).  The queue
+        keeps all Tk interaction in the main loop.
+        """
+        try:
+            while True:
+                event = self._events.get_nowait()
+                try:
+                    event()
+                except Exception:
+                    logger.exception("error while processing a UI event")
+        except queue.Empty:
+            pass
+        self.master.after(100, self._poll_events)
+
+    def _process_worker(self, pdf_path: str, out_path: Path, options: dict):
+        def on_progress(n, total):
+            # Thread-safe: the Tk update runs on the main thread.
+            self._events.put(
+                lambda n=n, total=total: self.progress.configure(maximum=total, value=n)
+            )
 
         try:
             result = process_pdf(
@@ -234,21 +272,40 @@ class SmartboardGUI:
                 clean=options["clean"],
                 progress=on_progress,
             )
-            self.master.after(
-                0, lambda: messagebox.showinfo("Done", f"Saved to {out_path}\n{result.summary()}")
+            self._events.put(
+                lambda: messagebox.showinfo("Done", f"Saved to {out_path}\n{result.summary()}")
             )
         except SmartboardError as e:
-            self.master.after(0, lambda: messagebox.showerror("Error", str(e)))
+            self._events.put(lambda: messagebox.showerror("Error", str(e)))
         except Exception as e:
             logger.exception("Unexpected error during processing")
-            self.master.after(0, lambda: messagebox.showerror("Error", f"Unexpected error: {e}"))
+            self._events.put(lambda: messagebox.showerror("Error", f"Unexpected error: {e}"))
         finally:
-            # Re‑enable UI components.
-            self.master.after(0, self._reset_ui)
+            # Re‑enable UI components (executed on the main thread).
+            self._events.put(self._reset_ui)
+
+    def _set_controls_state(self, state: str) -> None:
+        """Set the state ('normal'/'disabled') of every interactive widget.
+
+        The widget tree is walked recursively: the direct children of the
+        top-level window are Frames (which do not support the ``-state``
+        option and therefore raised ``TclError``); the actual controls
+        (buttons, entries, checkboxes, slider) live inside them.  Widgets
+        without a ``-state`` option (Frame, Label, ...) are skipped.
+        """
+
+        def _walk(widget) -> None:
+            for child in widget.winfo_children():
+                try:
+                    child.configure(state=state)
+                except TclError:
+                    pass
+                _walk(child)
+
+        _walk(self.master)
 
     def _reset_ui(self):
-        for child in self.master.winfo_children():
-            child.configure(state="normal")
+        self._set_controls_state("normal")
         self.progress['value'] = 0
 
 

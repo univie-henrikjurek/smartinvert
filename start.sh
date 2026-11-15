@@ -58,10 +58,10 @@ fi
 # -------------------------------------------- [2/3] venv + dependencies ---
 if [ ! -x .venv/bin/python ]; then
     if [ "$CLASSIC" -eq 1 ]; then
-        echo "[2/3] creating .venv with system Python ($("$PY" --version 2>&1 | awk '{print $2}')) ..."
+        echo "[2/3] creating .venv with system Python ($("$PY" --version 2>&1 | awk '{print $2}')) + dependencies (first run downloads ~80 MB) ..."
         "$PY" -m venv .venv
     else
-        echo "[2/3] creating .venv with Python 3.12 (uv downloads it on first use) ..."
+        echo "[2/3] creating .venv with Python 3.12 + dependencies (first run downloads ~80 MB; later starts are instant) ..."
         "$UV_BIN" venv --python 3.12 .venv
     fi
 fi
