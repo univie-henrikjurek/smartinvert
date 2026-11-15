@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smartboard-invert"
-version = "0.3.0"  # keep in sync with __version__ in smartboard_invert/__init__.py
+version = "0.4.0"  # keep in sync with __version__ in smartboard_invert/__init__.py
 description = "Selective smartboard inversion for PDFs (auto rectangle detection, CLI + simple GUI)"
 readme = "README.md"
-requires-python = ">=3.10"  # 3.9 is EOL and no longer in GitHub runner images
+# The starter script normally uses uv, which downloads its own CPython 3.12 –
+# the system Python (if any) only matters for the classic fallback path.
+# 3.9 works via PyMuPDF 1.x (CI tests 3.9 through uv-managed interpreters).
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "Henrik Jurek", email = "243551298+univie-henrikjurek@users.noreply.github.com"},
@@ -21,6 +24,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

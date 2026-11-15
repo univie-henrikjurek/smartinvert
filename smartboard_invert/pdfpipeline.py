@@ -372,7 +372,9 @@ def _pick_board_image(infos: List[dict], rect: "fitz.Rect", tol: float = 2.0):
             and ib.y1 >= rect.y1 - tol
         ):
             continue
-        if ib.get_area() < 0.5 * rect.get_area():
+        # width*height instead of Rect.get_area(): compatible with both
+        # PyMuPDF 1.x (Python 3.9) and 2.x
+        if ib.width * ib.height < 0.5 * rect.width * rect.height:
             continue
         transform = info.get("transform")
         if transform is not None:
@@ -380,7 +382,9 @@ def _pick_board_image(infos: List[dict], rect: "fitz.Rect", tol: float = 2.0):
             if abs(transform[1]) > 1e-3 or abs(transform[2]) > 1e-3:
                 logger.debug("image %s is not axis-aligned – skipping", info.get("xref"))
                 continue
-        if best is None or ib.get_area() > fitz.Rect(best["bbox"]).get_area():
+        if best is None or ib.width * ib.height > fitz.Rect(
+            best["bbox"]
+        ).width * fitz.Rect(best["bbox"]).height:
             best = info
     return best
 
