@@ -84,8 +84,8 @@ gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
 - Removed from history via `git filter-repo` (repo was fresh, no other
   clones): `outputs/test_inverted.pdf` and 3 `__pycache__/*.pyc` files
   (committed in Phase 1, deleted in Phase 2, but still reachable in a
-  public history; the `.pyc` files embedded sandbox build paths
-  `/root/opencode-projects/…`).
+  public history; the `.pyc` files embedded development-container build
+  paths, not user-machine paths).
 - History rewritten + force-pushed (master + tags v0.3.0/v0.4.0/v0.4.1),
   verified from an independent fresh clone: exactly the 25 project files,
   pattern scan clean, CI green (run 43725025521).
