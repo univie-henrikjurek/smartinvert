@@ -36,13 +36,16 @@ unverändert (Warnung). Seiten mit `/Rotate ≠ 0` werden unverändert kopiert.
 
 ## Quickstart (ein Befehl)
 
+> **Schritt-für-Schritt-Anleitung (Windows, macOS, Linux) inkl.
+> Troubleshooting:** [INSTALL.md](INSTALL.md)
+
 Voraussetzung: Python 3.10+ (`python3` im PATH).
 
 ```bash
 git clone https://github.com/univie-henrikjurek/smartinvert.git
 cd smartinvert
 ./start.sh -i test_input.pdf -o test_output.pdf    # Linux/macOS
-start.bat -i test_input.pdf -o test_output.pdf     # Windows
+.\start.bat -i test_input.pdf -o test_output.pdf   # Windows (PowerShell)
 ```
 
 Der erste Lauf legt `.venv/` an und installiert die Abhängigkeiten
