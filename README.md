@@ -1,135 +1,172 @@
 # Smartboard PDF Inverter
 
-Ein Python-Tool, das in PDF-Seiten das rechteckige Smartboard-Bild
-automatisch erkennt und **nur dieses Rechteck** invertiert (`255 − v` pro
-Kanal). Die weiße PDF-Seite außerhalb des Rechtecks, die Seitengröße, die
-Position des Boards und die Seitenreihenfolge bleiben exakt erhalten.
-Mehrseitige PDFs werden seitenweise und unabhängig verarbeitet; ein ganzes
-Verzeichnis lässt sich per Batch in einem Aufruf verarbeiten.
+Selectively invert the smartboard area of PDF documents — nothing else.
 
-## Funktionsweise
+Smartboard PDF Inverter automatically detects the rectangular smartboard
+(whiteboard) region on every page of a PDF and inverts **only that area**
+(strict `255 − v` per pixel channel). The white page around the board, the page
+size, the board's position, and the page order are preserved exactly:
+everything outside the detected rectangle is left pixel-identical.
 
-1. **Erkennung** – jede Seite wird mit dem eingestellten DPI gerendert;
-   eine robuste Hintergrund-Relative-Schwelle (`T = B − max(30, 0.25·(B − p25))`,
-   `B = p95`) plus Morphologie und Connected-Components-Gates (Fläche,
-   Seitenverhältnis, Ausdehnung, Randabstand, Kontrast, Zweideutigkeit)
-   liefert das Board-Rechteck mit Konfidenz. Details:
-   [ADR 0001](docs/adr/0001-robuste-erkennung-und-seitentreue-ausgabe.md).
-2. **Transformation** – ausschließlich innerhalb des Rechtecks wird invertiert
-   (strikt `255 − v`); optional (Legacy-Optionen) CLAHE und morphologische
-   Reinigung.
-3. **Seite-treue Ausgabe** – pro Seite eine von drei Methoden:
-   * `copy` – nichts erkannt (oder keine Transformation): verlustfreie Kopie.
-   * `image-replace` – das Board ist ein Bild-XObject: Bild extrahieren,
-     innerhalb des Rechtecks invertieren, verlustfrei (PNG) am selben Ort
-     ersetzen.
-   * `rerasterize` – sonst (z. B. Vektorinhalte wie `inputs/test.pdf`):
-     die Seite wird gerendert, invertiert und in **Original-Größe** eingebettet.
-4. **Verifikation & Debug** – nach jeder Seite wird geprüft, dass außerhalb
-   des Rechtecks nichts verändert wurde; `--debug` schreibt pro Seite ein
-   Composite (`original | original+BBox | ergebnis`) nach
-   `<output>/debug/<name>_pNN_debug.png`.
+<p align="center">
+  <img src="docs/demo-smartboard.png" alt="Before / detected / after" width="900">
+</p>
 
-**Fail-Safes:** Wird kein eindeutiges Rechteck gefunden, bleibt die Seite
-unverändert (Warnung). Seiten mit `/Rotate ≠ 0` werden unverändert kopiert.
-`output == input` wird abgelehnt; eine defekte Datei beendet den Batch nicht.
+*Detection and selective inversion on the bundled sample file: the board region
+is found automatically (green outline) and inverted; the surrounding page is
+untouched.*
 
-## Quickstart (ein Befehl)
+## Highlights
 
-> **Schritt-für-Schritt-Anleitung (Windows, macOS, Linux) inkl.
-> Troubleshooting:** [INSTALL.md](INSTALL.md)
+- **Automatic detection** — background-relative thresholding combined with
+  plausibility gates (area, rectangularity, contrast, page margin, ambiguity)
+  and a confidence score. If no unambiguous region is found, the page is left
+  unchanged and a warning is emitted — the whole page can never be inverted by
+  accident.
+- **Strictly selective inversion** — the strict pixel transformation
+  `255 − v` is applied inside the detected rectangle only.
+- **Page-faithful output** — original page size (MediaBox), board position, and
+  page order are preserved. Three output strategies, chosen per page:
+  lossless page copy, in-place board-image replacement (lossless PNG), or
+  re-embedding of a rendered page at the original size (for vector content).
+- **Built-in verification** — every processed page is re-rendered and compared
+  against the original; pixels outside the region must be unchanged (the
+  numbers are logged and available in the API).
+- **Batch processing** — process a single file or an entire directory in one
+  command.
+- **CLI and GUI** — a command-line interface (`smartinvert`) and a small
+  Tkinter GUI with live preview and progress reporting.
+- **Safe by design** — the input file is never modified; rotated pages and
+  ambiguous content fail safe (copied unchanged, never wrongly inverted).
 
-Voraussetzung: Python 3.10+ (`python3` im PATH).
+## How it works
+
+1. **Detection** — each page is rendered at the configured DPI. A deterministic
+   background-relative threshold (`T = B − max(30, 0.25·(B − p25))`,
+   `B = p95`) plus morphological closing and connected-component analysis
+   yields candidate regions; hard gates on area, dimensions, rectangularity,
+   margin, contrast, and a second-largest-candidate ratio select the board.
+   Details: [ADR 0001](docs/adr/0001-robuste-erkennung-und-seitentreue-ausgabe.md).
+2. **Transformation** — inside the rectangle only: strict inversion
+   (`255 − v`), plus optional (legacy) CLAHE contrast enhancement and
+   morphological cleaning.
+3. **Page-faithful output** — the page is reproduced with its original size and
+   one of the three strategies above.
+4. **Verification & debug** — the output page is re-rendered at the same DPI
+   and compared with the input (max/mean diff outside and inside the region);
+   `--debug` writes per-page composites
+   (`original | original + rectangle | result`) to `<output>/debug/`.
+
+## Quick start
+
+> Step-by-step installation guide (Windows, macOS, Linux), including
+> troubleshooting: see **[INSTALL.md](INSTALL.md)**.
+
+Requires **Python 3.10+**.
 
 ```bash
 git clone https://github.com/univie-henrikjurek/smartinvert.git
 cd smartinvert
-./start.sh -i test_input.pdf -o test_output.pdf    # Linux/macOS
-.\start.bat -i test_input.pdf -o test_output.pdf   # Windows (PowerShell)
+
+./start.sh -i test_input.pdf -o test_output.pdf   # Linux / macOS
+.\start.bat -i test_input.pdf -o test_output.pdf  # Windows (PowerShell)
 ```
 
-Der erste Lauf legt `.venv/` an und installiert die Abhängigkeiten
-(PyMuPDF, OpenCV (headless), NumPy, Pillow – GUI zusätzlich Tkinter); das
-dauert einmalig ~1–2 Minuten, danach ist jeder Start sofort fertig.
-**Ohne Argumente öffnet `./start.sh` die GUI** (Datei oder Ordner wählen).
+The first run creates a virtual environment in `.venv/` and installs the
+dependencies (PyMuPDF, OpenCV, NumPy, Pillow) — one-time cost of roughly
+1–3 minutes; every later start is instant. **Running the starter without
+arguments opens the GUI.**
 
 ```bash
-# Batch: alle PDFs in einem Ordner (gleiche Dateinamen)
+# Batch: all PDFs in a directory (output files keep their names)
 ./start.sh -i inputs/ -o outputs/ --debug
 
-# höhere Ausgabequalität (Detection + Einbettung)
+# Higher output quality (detection + embedding resolution)
 ./start.sh -i inputs/test.pdf -o out.pdf --dpi 300
 ```
 
-Ohne `-o` wird bei einer einzelnen Datei `<name>_inverted.pdf` neben der
-Eingabedatei angelegt (Legacy-Verhalten).
+Without `-o`, a single input file produces `<name>_inverted.pdf` next to the
+input (legacy behaviour).
 
-### Optionen (`smartinvert`)
+## Command line
 
-Nach der Installation ist das Tool auch direkt als `smartinvert`-Command
-verfügbar (`.venv/bin/smartinvert` bzw. nach `pip install .` im PATH).
+After the first run the tool is also available directly as the
+`smartinvert` command (inside `.venv/`, or on your PATH after activation).
 
-### Optionen
+```
+Usage: smartinvert -i INPUT [-o OUTPUT] [options]
 
-| Flag | Bedeutung |
-| --- | --- |
-| `--input`, `-i` | PDF-Datei oder Verzeichnis (Default: `inputs/`) |
-| `--output`, `-o` | Zieldatei (Datei-Input) oder Zielfenster/Verzeichnis; Default `outputs/` mit gleichem Dateinamen |
-| `--dpi N` | Render-DPI für Erkennung und Ausgabe (Default 150, Bereich 20–600) |
-| `--invert` / `--no-invert` | Inversion an/aus (Default: an) |
-| `--clahe` / `--no-clahe` | CLAHE im Rechteck (Legacy, Default: aus) |
-| `--clean` / `--no-clean` | Morphologische Reinigung im Rechteck (Legacy, Default: aus) |
-| `--debug` | Debug-Composites nach `<output>/debug/` |
-| `--config path.json` | JSON-Config; CLI-Flags haben Vorrang |
-| `-v` / `-vv` | Logstufe INFO / DEBUG |
+  -i, --input PATH       Input PDF file or directory (default: inputs/)
+  -o, --output PATH      Output file (file input) or directory
+                         (default: outputs/, same file names)
+      --dpi N            Rendering DPI for detection and output
+                         (default: 150, range 20–600)
+      --invert / --no-invert
+                         Invert the detected region (default: enabled)
+      --clahe / --no-clahe
+                         CLAHE contrast enhancement inside the region
+                         (legacy, default: off)
+      --clean / --no-clean
+                         Morphological cleaning inside the region
+                         (legacy, default: off)
+      --debug            Write per-page debug composites to <output>/debug/
+      --config PATH      Optional JSON config file; CLI flags take precedence
+  -v / -vv               Log level INFO / DEBUG
+      --version          Show version and exit
+```
 
-Exit-Code `0` bei Erfolg, `1` wenn mindestens eine Datei fehlschlug.
+Exit code: `0` on success, `1` if at least one file failed (a batch continues
+past failing files). Run `smartinvert --help` for the full reference.
 
 ## GUI
 
-```bash
-./start.sh                # ohne Argumente (Linux/macOS)
-start.bat                 # Windows
-# oder direkt: .venv/bin/python -m smartboard_invert.gui
-```
-
-**PDF…** oder **Ordner…** wählen (Ordner = Batch), optional ein
-**Output**-Ziel angeben, DPI/Optionen einstellen, Vorschaubild der ersten
-Seite ansehen und **Run** klicken.
-
-## Entwicklung
+Open the GUI by running the starter without arguments (or double-click
+`start.bat` on Windows):
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .          # editierbare Installation
-.venv/bin/pip install pytest pytest-cov
-.venv/bin/pytest --cov=smartboard_invert
+./start.sh        # Linux / macOS
+start.bat         # Windows
 ```
 
-## Tests
+- **PDF…** — select one file, or **Folder…** — process a whole directory
+  (batch)
+- **Output (optional)** — destination file/folder; leave empty for the default
+  `<name>_inverted.pdf` next to the input (folder input requires an output
+  folder)
+- **DPI** slider (default 150; raise to 300 for sharper results)
+- **Preview first page** — original and processed page side by side
+- **Run** — processes with a progress bar and reports the output location
 
-```bash
-pytest --cov=smartboard_invert --cov-report=term-missing --cov-fail-under=80
-```
-
-88 Tests (Erkennung, Verarbeitung, End-to-End-Pipeline inkl. der 8
-Pflichtszenarien, CLI) bei ≥ 90 % Coverage; CI-Workflow in
-`.github/workflows/ci.yml` mit Coverage-Gate 80 %.
-
-## Projektstruktur
+## Project layout
 
 ```
 smartboard_invert/
-  detection.py    # Rechteck-Erkennung (Schwelle, Gates, Konfidenz, Refinement)
-  processing.py   # Bild-Transformationen (255-v, CLAHE, Cleaning), PDF<->Bilder
-  pdfpipeline.py  # process_pdf(): 3 Ausgabemethoden, Verifikation, Debug
-  cli.py          # Batch-CLI mit Config
-  gui.py          # Tkinter-GUI
-  __main__.py     # python -m smartboard_invert
-docs/adr/         # Architektur-Entscheidungen
-tests/            # pytest-Suite inkl. synthetischer PDFs mit Ground Truth
+  detection.py    # Rectangle detection (threshold, gates, confidence, refinement)
+  processing.py   # Image transformations (255 − v, CLAHE, cleaning), PDF ⇄ images
+  pdfpipeline.py  # process_pdf(): three output strategies, verification, debug
+  cli.py          # Batch CLI with JSON config support
+  gui.py          # Tkinter GUI
+  __main__.py     # python -m smartboard_invert entry point
+docs/adr/         # Architecture decision records
+tests/            # pytest suite with synthetic PDF fixtures (ground truth)
 ```
 
-## Lizenz
+## Development
 
-MIT – siehe LICENSE.
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .            # editable install
+.venv/bin/pip install pytest pytest-cov
+.venv/bin/pytest --cov=smartboard_invert --cov-report=term-missing
+```
+
+The test suite covers detection, processing, the end-to-end pipeline
+(including the mandatory scenario set), and the CLI, with an 80 % coverage
+gate. CI (GitHub Actions) runs the suite on Python 3.10 and 3.13, installs the
+package the same way end users do, and executes a smoke test on the bundled
+sample. See [STATUS.md](STATUS.md) for the current project state.
+
+## License
+
+[MIT](LICENSE) — free to use, modify, and distribute, including commercially;
+the only obligation is to keep the copyright and license notice.

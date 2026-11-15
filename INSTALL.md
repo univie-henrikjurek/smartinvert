@@ -1,80 +1,86 @@
-# Installation & Start – Smartboard PDF Inverter
+# Installation Guide
 
-Dieses Dokument führt Schritt für Schritt zum ersten Lauf. Einzige
-Voraussetzung ist **Python 3.10 oder neuer** – das Start-Script (`start.bat`
-bzw. `start.sh`) erledigt den Rest automatisch (eigene virtuelle Umgebung,
-Abhängigkeiten, Command).
+This guide takes you from a fresh machine to a first successful run. The only
+prerequisite is **Python 3.10 or newer** — the starter script (`start.bat` on
+Windows, `start.sh` on Linux/macOS) handles everything else: it creates an
+isolated virtual environment, installs the dependencies, and launches the CLI
+or GUI.
 
 ---
 
-## 1. Python installieren (falls noch nicht vorhanden)
+## 1. Install Python (skip if you already have it)
 
-Kurz-Check in einem Terminal: `python --version` (Windows) bzw.
-`python3 --version` (Linux/macOS) – es muss **3.10 oder neuer** kommen.
+Quick check in a terminal: `python --version` (Windows) or
+`python3 --version` (Linux/macOS). You need **3.10 or newer**.
 
 ### Windows
-1. Installer von <https://www.python.org/downloads/> laden
-   (3.10 oder neuer, „Windows installer 64-bit“).
-2. **Wichtig:** Im ersten Installationsfenster den Haken setzen bei
-   **☑ Add python.exe to PATH**, dann *Install Now*.
-3. **Neues** Terminal öffnen (alte Fenster kennen den neuen PATH nicht) und
-   prüfen: `python --version`.
 
-> Die Tkinter-GUI ist im Windows-Installer von python.org bereits enthalten –
-> es ist nichts extra zu installieren.
+1. Download the installer from
+   <https://www.python.org/downloads/> (3.10 or newer, “Windows installer
+   64-bit”).
+2. **Important:** on the first screen, tick **☑ Add python.exe to PATH**, then
+   click *Install Now*.
+3. Open a **new** terminal window (existing windows don't see the updated
+   PATH) and verify with `python --version`.
+
+> The Tkinter GUI is included in the python.org Windows installer — there is
+> nothing extra to install.
 
 ### macOS
-`python3 --version` – falls vorhanden, fertig. Sonst Python von
-<https://www.python.org/downloads/> (Graphical installer) oder
-`brew install python`.
+
+`python3 --version` — if Python is present, you're done. Otherwise install
+Python from <https://www.python.org/downloads/> (graphical installer) or via
+Homebrew: `brew install python`.
 
 ### Linux (Ubuntu/Debian)
-`python3 --version` – ist meist vorhanden. Falls die virtuelle Umgebung
-fehlt: `sudo apt install python3-venv`.
-Für die **GUI** zusätzlich: `sudo apt install python3-tk`.
+
+`python3 --version` — usually preinstalled. If creating virtual environments
+fails, install the venv module: `sudo apt install python3-venv`.
+For the **GUI**, additionally: `sudo apt install python3-tk`.
 
 ---
 
-## 2. Projekt holen (eine der beiden Varianten)
+## 2. Get the project (pick one)
 
-### Variante A: ohne Git (ZIP-Download)
-1. Repo im Browser öffnen: <https://github.com/univie-henrikjurek/smartinvert>
-2. Grünen Button **Code → Download ZIP** klicken.
-3. ZIP-Datei entpacken (Rechtsklick → *Alle extrahieren*).
+### Option A: without Git (ZIP download)
 
-### Variante B: mit Git
-[Git for Windows](https://git-scm.com/download/win) installieren (falls nicht
-vorhanden), dann:
+1. Open the repository: <https://github.com/univie-henrikjurek/smartinvert>
+2. Click the green **Code** button → **Download ZIP**.
+3. Extract the archive (right-click → *Extract All* on Windows).
+
+### Option B: with Git
+
+Install [Git for Windows](https://git-scm.com/download/win) if you don't have
+it, then:
 
 ```powershell
 git clone https://github.com/univie-henrikjurek/smartinvert.git
 cd smartinvert
 ```
 
-Danach alle Befehle **im Projektordner** ausführen (dort liegen
-`start.bat`, `start.sh`, `inputs/` …).
+From here on, run all commands **inside the project folder** (the one that
+contains `start.bat`, `start.sh`, and `inputs/`).
 
 ---
 
-## 3. Starten – ein Befehl
+## 3. Run it — one command
 
 ### Windows
 
-PowerShell oder Eingabeaufforderung im Projektordner öffnen (Tipp: im
-Explorer im Ordner auf die Adressleiste klicken, `powershell` eingeben,
-Enter).
+Open PowerShell in the project folder (tip: in File Explorer, click the address
+bar, type `powershell`, press Enter).
 
 ```powershell
-# eine Datei verarbeiten (Beispiel mit der mitgelieferten Testdatei)
+# Process the bundled sample file (good first test)
 .\start.bat -i inputs\test.pdf -o outputs\test.pdf
 
-# eigenes PDF
+# Process your own file
 .\start.bat -i test_input.pdf -o test_output.pdf
 
-# Batch: alle PDFs eines Ordners (gleiche Namen im Zielfenster)
+# Batch: every PDF in a directory (output files keep their names)
 .\start.bat -i inputs\ -o outputs\
 
-# GUI öffnen (oder einfach start.bat per Doppelklick starten)
+# Open the GUI (or simply double-click start.bat)
 .\start.bat
 ```
 
@@ -83,65 +89,66 @@ Enter).
 ```bash
 ./start.sh -i test_input.pdf -o test_output.pdf
 ./start.sh -i inputs/ -o outputs/
-./start.sh                    # GUI
+./start.sh                    # open the GUI
 ```
 
-**Erster Lauf:** Das Script legt `.venv/` an und installiert die
-Abhängigkeiten (PyMuPDF, OpenCV, NumPy, Pillow). Das dauert je nach
-Internetverbindung **1–3 Minuten**. Alle weiteren Starts sind sofort
-fertig – `.venv/` einfach stehen lassen.
+**First run:** the script creates `.venv/` and installs the dependencies
+(PyMuPDF, OpenCV, NumPy, Pillow). Expect **1–3 minutes** depending on your
+internet connection. Leave `.venv/` in place — every later start is instant.
 
 ---
 
-## 4. Die GUI
+## 4. Using the GUI
 
-`start.bat` / `start.sh` **ohne Argumente** (oder Doppelklick) öffnet das
-Fenster:
+Run the starter **without arguments** (or double-click `start.bat`) to open
+the window:
 
-- **PDF…** – eine Datei wählen, oder **Ordner…** – einen Ordner mit
-  mehreren PDFs (Batch, gleiche Namen im Zielfenster)
-- **Output (optional)** – Ziel angeben; leer lassen → bei einer Datei
-  erscheint `<name>_inverted.pdf` neben der Eingabe (Ordner-Input verlangt
-  ein Zielfenster)
-- **DPI**-Schieberegler (Standard 150 – für schärfere Ausgabe z. B. 300
-  wählen, dauert dann länger)
-- **Preview first page** – Original | invertiert nebeneinander
-- **Run** – verarbeitet mit Fortschrittsbalken; am Ende zeigt das Fenster
-  den Ablageort an
+- **PDF…** — select a single file, or **Folder…** — process a whole directory
+  (batch; output files keep their names)
+- **Output (optional)** — destination file or folder. Leave empty for the
+  default `<name>_inverted.pdf` next to the input; folder input requires an
+  output folder
+- **DPI** slider (default 150 — raise to ~300 for sharper output, at the cost
+  of processing time)
+- **Preview first page** — original and processed page side by side
+- **Run** — processes all pages with a progress bar; a dialog reports the
+  output location when finished
 
 ---
 
-## 5. Was das Tool macht / wo die Ergebnisse liegen
+## 5. What you get
 
-- Pro Seite wird das rechteckige Smartboard-Bild automatisch erkannt und
-  **nur dieses Rechteck** invertiert; die weiße Seite drumherum, die
-  Seitengröße und die Position bleiben exakt erhalten.
-- Ausgabe-PDF am mit `-o` angegebenen Ort (Standard s. o.).
-- Mit `--debug` (CLI) liegen zusätzlich Probenbilder unter
-  `<Zielordner>/debug/<name>_pNN_debug.png` (Original | Original+Rechteck |
-  Ergebnis).
-- Der Eingabepfad wird **nie** verändert oder überschrieben.
+- One output PDF at the destination you specified (or the default location).
+  Only the detected board region on each page is inverted; the white page
+  around it, the page size, and the board position are unchanged.
+- With `--debug` (CLI) or via the debug output, per-page composites are
+  written to `<output folder>/debug/<name>_pNN_debug.png`:
+  *original | original + detected rectangle | result* — useful to verify what
+  was detected.
+- The input file is **never** modified or overwritten (the tool refuses to
+  write to the input path).
 
-### Wichtige CLI-Optionen
+### Most useful CLI options
 
-| Flag | Bedeutung |
+| Flag | Meaning |
 | --- | --- |
-| `-i`, `--input` | PDF-Datei oder Verzeichnis |
-| `-o`, `--output` | Zieldatei oder Zielverzeichnis |
-| `--dpi N` | Auflösung für Erkennung + Ausgabe (20–600, Default 150) |
-| `--no-invert` | Erkennung ohne Invertierung (nur Debug/Analyse) |
-| `--debug` | Debug-Composites schreiben |
-| `-v` / `-vv` | ausführliche / sehr ausführliche Logs |
-| `--version` | Versionsnummer anzeigen |
+| `-i`, `--input` | Input PDF file or directory |
+| `-o`, `--output` | Output file or directory |
+| `--dpi N` | Detection + output resolution (20–600, default 150) |
+| `--no-invert` | Detect only, without inverting (analysis/debug) |
+| `--debug` | Write per-page debug composites |
+| `-v` / `-vv` | Verbose / very verbose logging |
+| `--version` | Show the version |
 
-Vollständige Optionsliste: `.\start.bat --help` bzw. `./start.sh --help`.
+Full reference: `.\start.bat --help` (Windows) or `./start.sh --help`
+(Linux/macOS).
 
 ---
 
-## 6. Optional: `smartinvert` direkt im PATH
+## 6. Optional: use `smartinvert` directly on your PATH
 
-Wenn du das Command ohne `start.bat`/`start.sh` aufrufen willst, die
-virtuelle Umgebung aktivieren:
+If you prefer calling the command directly (without the starter script),
+activate the virtual environment per terminal session:
 
 ```powershell
 # Windows
@@ -150,31 +157,31 @@ smartinvert -i test_input.pdf -o test_output.pdf
 ```
 
 ```bash
-# Linux/macOS
+# Linux / macOS
 source .venv/bin/activate
 smartinvert -i test_input.pdf -o test_output.pdf
 ```
 
-(Das Fenster danach mit `deactivate` wieder verlassen; die Aktivierung ist
-nur pro Terminal-Sitzung nötig.)
+Leave the session again with `deactivate`.
 
 ---
 
-## 7. Problemlösungen
+## 7. Troubleshooting
 
-| Problem | Lösung |
+| Problem | Solution |
 | --- | --- |
-| `'python' is not recognized as an internal or external command` | Python mit Haken **Add python.exe to PATH** (neu) installieren, danach **neues** Terminal öffnen |
-| `error: Python 3.10+ not found` (beim Start) | Python ist installiert, aber zu alt → Version 3.10+ nachinstallieren |
-| Doppelklick auf `start.bat`: Fenster flackert und schließt sich | `start.bat` in der PowerShell ausführen, um die Meldung zu sehen (meist fehlendes/zu altes Python) |
-| Erster Lauf dauert lange | Normal: einmaliger Download von ~60–90 MB; danach sofort |
-| `ModuleNotFoundError: No module named 'tkinter'` (nur bei der GUI) | Linux (Ubuntu/Debian): `sudo apt install python3-tk`. Windows/macOS: Python von python.org verwenden (enthält Tkinter) |
-| Windows Smart Screen: „Ihr PC wurde geschützt“ | Auf **Weitere Informationen → Trotzdem ausführen** klicken (die Scripte sind lokal und nicht signiert – das ist normal) |
-| GUI startet nicht in einer Remote-Session/SSH ohne Anzeige | GUI braucht ein Desktop; dort stattdessen die CLI nutzen (`start.bat -i … -o …`) |
+| `'python' is not recognized as an internal or external command` | Reinstall Python with the **Add python.exe to PATH** option ticked, then open a **new** terminal |
+| `error: Python 3.10+ not found` (from the starter) | Python is missing or too old — install Python 3.10+ (step 1) |
+| Double-clicking `start.bat` opens a window that closes immediately | Run `start.bat` from PowerShell so the error message is visible (usually missing or too-old Python) |
+| First run is slow | Normal — a one-time download of ~60–90 MB of dependencies; subsequent runs are instant |
+| `ModuleNotFoundError: No module named 'tkinter'` (GUI only) | Linux (Ubuntu/Debian): `sudo apt install python3-tk`. Windows/macOS: use the Python from python.org (includes Tkinter) |
+| Windows Smart Screen: “Your PC was protected” | Click **More info → Run anyway** — the scripts are local and unsigned, this is expected |
+| GUI won't open in a remote/SSH session without a display | The GUI needs a desktop; use the CLI there instead (`start.bat -i … -o …`) |
+| Detection fails on a page (“no unambiguous region”) | The page was copied unchanged (fail-safe). Try a higher `--dpi`, check the debug composite, or inspect the page manually |
 
 ---
 
-## 8. Deinstallieren
+## 8. Uninstalling
 
-Einfach den Projektordner (inklusive `.venv`) löschen. Es wird sonst
-nichts im System installiert.
+Delete the project folder (including `.venv`). Nothing else is installed on
+the system.
