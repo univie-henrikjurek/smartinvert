@@ -1,46 +1,22 @@
 # Installation Guide
 
-This guide takes you from a fresh machine to a first successful run. The only
-prerequisite is **Python 3.10 or newer** — the starter script (`start.bat` on
-Windows, `start.sh` on Linux/macOS) handles everything else: it creates an
-isolated virtual environment, installs the dependencies, and launches the CLI
-or GUI.
+This guide takes you from a fresh machine to a first successful run.
+
+**There is nothing to install beforehand.** The starter script
+(`start.bat` on Windows, `start.sh` on Linux/macOS) sets up everything by
+itself — including a private Python interpreter. All you need is an internet
+connection for the first run.
+
+> *How it works under the hood: the starter uses
+> [uv](https://docs.astral.sh/uv/) (a fast Python package/interpreter
+> manager, ~15 MB) to create a virtual environment `.venv/` with a private
+> CPython 3.12 that uv downloads on first use. If uv cannot be installed
+> (e.g. a restricted network), the starter transparently falls back to your
+> system Python (3.9 or newer).*
 
 ---
 
-## 1. Install Python (skip if you already have it)
-
-Quick check in a terminal: `python --version` (Windows) or
-`python3 --version` (Linux/macOS). You need **3.10 or newer**.
-
-### Windows
-
-1. Download the installer from
-   <https://www.python.org/downloads/> (3.10 or newer, “Windows installer
-   64-bit”).
-2. **Important:** on the first screen, tick **☑ Add python.exe to PATH**, then
-   click *Install Now*.
-3. Open a **new** terminal window (existing windows don't see the updated
-   PATH) and verify with `python --version`.
-
-> The Tkinter GUI is included in the python.org Windows installer — there is
-> nothing extra to install.
-
-### macOS
-
-`python3 --version` — if Python is present, you're done. Otherwise install
-Python from <https://www.python.org/downloads/> (graphical installer) or via
-Homebrew: `brew install python`.
-
-### Linux (Ubuntu/Debian)
-
-`python3 --version` — usually preinstalled. If creating virtual environments
-fails, install the venv module: `sudo apt install python3-venv`.
-For the **GUI**, additionally: `sudo apt install python3-tk`.
-
----
-
-## 2. Get the project (pick one)
+## 1. Get the project (pick one)
 
 ### Option A: without Git (ZIP download)
 
@@ -58,17 +34,17 @@ git clone https://github.com/univie-henrikjurek/smartinvert.git
 cd smartinvert
 ```
 
-From here on, run all commands **inside the project folder** (the one that
+From here on, everything happens **inside the project folder** (the one that
 contains `start.bat`, `start.sh`, and `inputs/`).
 
 ---
 
-## 3. Run it — one command
+## 2. Run it — one command
 
 ### Windows
 
-Open PowerShell in the project folder (tip: in File Explorer, click the address
-bar, type `powershell`, press Enter).
+**Double-click `start.bat`** to open the GUI, or open PowerShell in the
+project folder (tip: click the address bar, type `powershell`, press Enter):
 
 ```powershell
 # Process the bundled sample file (good first test)
@@ -80,25 +56,41 @@ bar, type `powershell`, press Enter).
 # Batch: every PDF in a directory (output files keep their names)
 .\start.bat -i inputs\ -o outputs\
 
-# Open the GUI (or simply double-click start.bat)
+# Open the GUI
 .\start.bat
 ```
 
 ### Linux / macOS
 
 ```bash
+# Process the bundled sample file (good first test)
+./start.sh -i inputs/test.pdf -o outputs/test.pdf
+
+# Process your own file
 ./start.sh -i test_input.pdf -o test_output.pdf
+
+# Batch
 ./start.sh -i inputs/ -o outputs/
-./start.sh                    # open the GUI
+
+# Open the GUI
+./start.sh
 ```
 
-**First run:** the script creates `.venv/` and installs the dependencies
-(PyMuPDF, OpenCV, NumPy, Pillow). Expect **1–3 minutes** depending on your
-internet connection. Leave `.venv/` in place — every later start is instant.
+**First run:** you will see three steps —
+
+```
+[1/3] uv not found - installing (one-time, ~15 MB) ...
+[2/3] creating .venv with Python 3.12 (uv downloads it on first use) ...
+[3/3] starting ...
+```
+
+This takes **1–3 minutes** depending on your internet connection (it
+downloads ~80 MB of dependencies once). Leave `.venv/` in place — every
+later start is instant and skips straight to `[3/3]`.
 
 ---
 
-## 4. Using the GUI
+## 3. Using the GUI
 
 Run the starter **without arguments** (or double-click `start.bat`) to open
 the window:
@@ -116,13 +108,13 @@ the window:
 
 ---
 
-## 5. What you get
+## 4. What you get
 
 - One output PDF at the destination you specified (or the default location).
   Only the detected board region on each page is inverted; the white page
   around it, the page size, and the board position are unchanged.
-- With `--debug` (CLI) or via the debug output, per-page composites are
-  written to `<output folder>/debug/<name>_pNN_debug.png`:
+- With `--debug` (CLI), per-page composites are written to
+  `<output folder>/debug/<name>_pNN_debug.png`:
   *original | original + detected rectangle | result* — useful to verify what
   was detected.
 - The input file is **never** modified or overwritten (the tool refuses to
@@ -145,7 +137,7 @@ Full reference: `.\start.bat --help` (Windows) or `./start.sh --help`
 
 ---
 
-## 6. Optional: use `smartinvert` directly on your PATH
+## 5. Optional: use `smartinvert` directly on your PATH
 
 If you prefer calling the command directly (without the starter script),
 activate the virtual environment per terminal session:
@@ -166,22 +158,25 @@ Leave the session again with `deactivate`.
 
 ---
 
-## 7. Troubleshooting
+## 6. Troubleshooting
 
 | Problem | Solution |
 | --- | --- |
-| `'python' is not recognized as an internal or external command` | Reinstall Python with the **Add python.exe to PATH** option ticked, then open a **new** terminal |
-| `error: Python 3.10+ not found` (from the starter) | Python is missing or too old — install Python 3.10+ (step 1) |
-| Double-clicking `start.bat` opens a window that closes immediately | Run `start.bat` from PowerShell so the error message is visible (usually missing or too-old Python) |
-| First run is slow | Normal — a one-time download of ~60–90 MB of dependencies; subsequent runs are instant |
-| `ModuleNotFoundError: No module named 'tkinter'` (GUI only) | Linux (Ubuntu/Debian): `sudo apt install python3-tk`. Windows/macOS: use the Python from python.org (includes Tkinter) |
+| `[1/3] uv not found - installing ...` on the first run | Normal — the one-time setup; it should reach `[3/3]` within a few minutes |
+| The uv installation step fails (corporate proxy, restricted network) | The starter automatically falls back to the system Python. If that also fails, install [uv manually](https://docs.astral.sh/uv/getting-started/installation/) or Python 3.9+ from python.org |
+| First run is slow | Normal: one-time download of ~80 MB (uv + Python + dependencies). Later runs are instant |
+| Double-clicking `start.bat` opens a window that closes immediately | Run `start.bat` from PowerShell so the message is visible (usually a network problem during the one-time setup) |
+| `error: no uv and no suitable system Python (3.9+) found` | Install Python 3.9+ from <https://www.python.org/downloads/> (tick **Add python.exe to PATH**) or fix the network so uv can be downloaded |
 | Windows Smart Screen: “Your PC was protected” | Click **More info → Run anyway** — the scripts are local and unsigned, this is expected |
 | GUI won't open in a remote/SSH session without a display | The GUI needs a desktop; use the CLI there instead (`start.bat -i … -o …`) |
 | Detection fails on a page (“no unambiguous region”) | The page was copied unchanged (fail-safe). Try a higher `--dpi`, check the debug composite, or inspect the page manually |
+| Offline machine (no internet at all) | Copy a prepared `.venv/` from another machine of the same OS/architecture, or pre-install the dependencies; see the development notes in the README |
 
 ---
 
-## 8. Uninstalling
+## 7. Uninstalling
 
-Delete the project folder (including `.venv`). Nothing else is installed on
+Delete the project folder (including `.venv`). Optionally also remove uv if
+you don't need it for anything else: `~/.local/bin/uv` (Linux/macOS) or
+`%USERPROFILE%\.local\bin\uv.exe` (Windows). Nothing else is installed on
 the system.

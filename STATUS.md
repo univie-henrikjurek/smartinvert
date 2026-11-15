@@ -36,6 +36,35 @@ gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
   v0.3.0; packaging verified in a scratch venv (`pip install .` →
   `smartinvert` runs the sample)
 
+**Phase 4 – "It just works" distribution (2026-11-15, v0.4.0):**
+- **uv-first starter:** `start.sh`/`start.bat` now install `uv`
+  automatically (official installer, one-time ~15 MB) and create `.venv`
+  with a **uv-managed CPython 3.12** (downloaded by uv on first use,
+  includes Tkinter → GUI works without any system Python). System Python is
+  no longer a prerequisite at all.
+- **Fallback:** if uv cannot be installed (restricted network), the starter
+  transparently falls back to the system Python (classic venv + pip).
+- **Python 3.9 supported again** (`requires-python >=3.9`): the 3.10 floor
+  was a CI artifact. Only incompatibility found: `Rect.get_area()` (PyMuPDF
+  2.x API) → replaced by `width * height` (works on PyMuPDF 1.26 and 2.x).
+  Verified: full 88-test suite green on 3.9 (PyMuPDF 1.26.5), 3.12, and 3.13
+  (all via uv-managed interpreters).
+- **CI is uv-based now:** uv downloads standalone CPython builds, so the
+  matrix (3.9 + 3.13) no longer depends on runner-image Python versions.
+- **Verified end-to-end (fresh-repo simulation):** (1) no uv anywhere →
+  official installer runs → venv 3.12 → sample processed; (2) uv installer
+  blocked → classic fallback with system Python → identical output.
+- Docs: README/INSTALL rewritten for the no-prerequisite flow.
+
+## Future Ideas (backlog, no priority yet)
+- **Standalone binary** (PyInstaller/Nuitka): single executable per OS
+  (zero prerequisites, ~150–200 MB) for releases — ultimate comfort for
+  non-technical users; per-OS CI builds + release artifacts needed.
+- Optional: PyPI publication (`pip install smartboard-invert`) if distribution
+  beyond GitHub ZIP/clone is wanted.
+- README/CI annotations: update `actions/checkout`/`setup-python` majors when
+  the Node-24 versions are stable (currently only deprecation warnings).
+
 ## Final Verification (2026-11-14)
 
 - **Test suite:** `pytest --cov=smartboard_invert --cov-fail-under=80` →

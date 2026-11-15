@@ -62,7 +62,10 @@ untouched.*
 > Step-by-step installation guide (Windows, macOS, Linux), including
 > troubleshooting: see **[INSTALL.md](INSTALL.md)**.
 
-Requires **Python 3.10+**.
+**No prerequisites** — the starter script sets up everything on its own,
+including a private Python interpreter (managed by
+[uv](https://docs.astral.sh/uv/)). It works regardless of whether Python is
+installed on the system (or which version).
 
 ```bash
 git clone https://github.com/univie-henrikjurek/smartinvert.git
@@ -72,10 +75,12 @@ cd smartinvert
 .\start.bat -i test_input.pdf -o test_output.pdf  # Windows (PowerShell)
 ```
 
-The first run creates a virtual environment in `.venv/` and installs the
-dependencies (PyMuPDF, OpenCV, NumPy, Pillow) — one-time cost of roughly
-1–3 minutes; every later start is instant. **Running the starter without
-arguments opens the GUI.**
+First run: the starter installs `uv` (~15 MB, one-time), fetches a private
+Python 3.12, and creates a virtual environment in `.venv/` with all
+dependencies — roughly 1–3 minutes once; every later start is instant.
+**Running the starter without arguments opens the GUI.** On systems where
+`uv` cannot be installed, the starter transparently falls back to the system
+Python (3.9 or newer).
 
 ```bash
 # Batch: all PDFs in a directory (output files keep their names)

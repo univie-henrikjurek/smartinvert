@@ -12,24 +12,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 = oldest supported (3.9 is EOL and no longer in runner images)
-        python-version: ["3.10", "3.13"]
+        # Tested through uv-managed (standalone) CPython builds, independent
+        # of the runner image: 3.9 = oldest supported, 3.13 = newest common.
+        python-version: ["3.9", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Create venv
-        run: python -m venv .venv
-      # Install as a real (non-editable) package – the same path start.sh uses
-      # for end users, so CI validates the actual installation experience.
-      - name: Install package
+      # Same tooling the start script uses for end users (uv + managed CPython).
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Add uv to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Create venv with Python ${{ matrix.python-version }}
+        run: uv venv .venv --python "${{ matrix.python-version }}"
+      - name: Install package + test dependencies
         run: |
-          .venv/bin/pip install --quiet --upgrade pip
-          .venv/bin/pip install --quiet .
-      - name: Install test dependencies
-        run: .venv/bin/pip install --quiet pytest pytest-cov
+          uv pip install --python .venv/bin/python --quiet .
+          uv pip install --python .venv/bin/python --quiet pytest pytest-cov
       - name: Run tests
         run: |
           .venv/bin/python -m pytest --cov=smartboard_invert --cov-fail-under=80
