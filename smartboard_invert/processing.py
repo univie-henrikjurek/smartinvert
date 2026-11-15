@@ -3,11 +3,17 @@
 Public functions:
 
 1. ``pdf_to_images`` – rasterises each page of a PDF to a NumPy ``ndarray``.
-2. ``invert_region`` – strict ``255 − v`` pixel inversion inside a rectangle.
-3. ``enhance_image`` / ``enhance_image_ex`` – detect the smartboard area
+2. ``color_mask`` – boolean mask of pixels matching the requested marker
+   colours (BGR, see :data:`KEEPABLE_COLORS`).
+3. ``invert_or_remap`` – the single in-region pixel operation: strict
+   ``255 − v`` (default) or a linear per-channel remap onto a target
+   background colour, with optional exclusion of marker colours.
+4. ``invert_region`` – applies the in-region pixel operation inside a
+   rectangle (strict ``255 − v`` by default).
+5. ``enhance_image`` / ``enhance_image_ex`` – detect the smartboard area
    (via :mod:`smartboard_invert.detection`) and apply (optional CLAHE /
-   cleaning /) inversion **only inside** it.
-4. ``images_to_pdf`` – assembles a list of processed images into a PDF (pages
+   cleaning /) inversion or target-background remap **only inside** it.
+6. ``images_to_pdf`` – assembles a list of processed images into a PDF (pages
    sized to the images; used by the GUI preview and legacy flows – the main
    pipeline lives in :mod:`smartboard_invert.pdfpipeline`).
 
@@ -19,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import AbstractSet, FrozenSet, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -33,6 +39,19 @@ from .detection import Rect, detect_smartboard_region
 from .detection import DetectionResult
 
 logger = logging.getLogger(__name__)
+
+#: Marker colours that may be preserved (excluded from the inversion/remap)
+#: via the ``keep_colors`` option.  Unknown names are rejected with
+#: :class:`SmartboardError` (see :func:`color_mask`).
+KEEPABLE_COLORS: FrozenSet[str] = frozenset({"red", "green", "blue", "yellow"})
+
+#: Minimum channel dominance for a pixel to count as a marker of a colour
+#: (well above screenshot noise ≤ 10, well below real marker differences ≥ 100).
+COLOR_DELTA: int = 40
+
+#: Minimum value of the dominant channel (well above dark board noise ≤ 60,
+#: well below saturated markers ≥ 150).
+COLOR_MIN: int = 80
 
 
 class SmartboardError(Exception):
@@ -97,13 +116,186 @@ def pdf_to_images(pdf_path: "str | Path", dpi: int = 150) -> List[np.ndarray]:
     return images
 
 
-def invert_region(img: np.ndarray, rect: Rect, pad: int = 0) -> np.ndarray:
-    """Return a copy of *img* with only the pixels inside *rect* inverted.
+def color_mask(region: np.ndarray, colors: AbstractSet[str]) -> np.ndarray:
+    """Boolean mask of the pixels in *region* matching any of *colors*.
 
-    The inversion is the strict pixel transformation
+    A pixel counts as a marker of a colour when its dominant channel exceeds
+    the other channels by at least :data:`COLOR_DELTA` **and** reaches
+    :data:`COLOR_MIN` (see ADR 0002, D2):
+
+    * ``red``:    ``R > G + Δ`` ∧ ``R > B + Δ`` ∧ ``R ≥ R_min``
+    * ``green``:  ``G > R + Δ`` ∧ ``G > B + Δ`` ∧ ``G ≥ R_min``
+    * ``blue``:   ``B > R + Δ`` ∧ ``B > G + Δ`` ∧ ``B ≥ R_min``
+    * ``yellow``: ``R > B + Δ`` ∧ ``G > B + Δ`` ∧ ``R, G ≥ R_min``
+
+    The result is the OR over all requested colours, so white chalk
+    (R ≈ G ≈ B) and dark noise never match.  Channels are compared as
+    ``int16`` to avoid uint8 overflow.
+
+    Parameters
+    ----------
+    region:
+        ``uint8`` BGR image (3 channels; internally channel 0 = B, 1 = G,
+        2 = R).
+    colors:
+        Subset of :data:`KEEPABLE_COLORS`; any unknown name raises
+        :class:`SmartboardError`.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask of shape ``(H, W)``.
+    """
+    if region is None or not isinstance(region, np.ndarray) or region.dtype != np.uint8:
+        raise SmartboardError("color_mask expects a uint8 ndarray")
+    if region.ndim != 3 or region.shape[2] != 3:
+        raise SmartboardError("color_mask expects a BGR image with 3 channels")
+    unknown = set(colors) - KEEPABLE_COLORS
+    if unknown:
+        raise SmartboardError(
+            f"unknown color(s) in keep_colors: {', '.join(sorted(unknown))} "
+            f"(allowed: {', '.join(sorted(KEEPABLE_COLORS))})"
+        )
+    # BGR order; int16 so that e.g. ``r - b`` cannot overflow.
+    b = region[..., 0].astype(np.int16)
+    g = region[..., 1].astype(np.int16)
+    r = region[..., 2].astype(np.int16)
+    delta = COLOR_DELTA
+    mask = np.zeros(region.shape[:2], dtype=bool)
+    if "red" in colors:
+        mask |= (r > g + delta) & (r > b + delta) & (r >= COLOR_MIN)
+    if "green" in colors:
+        mask |= (g > r + delta) & (g > b + delta) & (g >= COLOR_MIN)
+    if "blue" in colors:
+        mask |= (b > r + delta) & (b > g + delta) & (b >= COLOR_MIN)
+    if "yellow" in colors:
+        mask |= (r > b + delta) & (g > b + delta) & (r >= COLOR_MIN) & (g >= COLOR_MIN)
+    return mask
+
+
+def validate_bg_target(bg_target: Optional[Tuple[int, int, int]]) -> Optional[Tuple[int, int, int]]:
+    """Validate a user-facing ``bg_target`` and return it as a normalized tuple.
+
+    ``None`` (the strict ``255 − v`` complement) passes through.  Anything
+    else must be exactly 3 ints in 0–255 (lists are accepted and converted,
+    booleans are rejected); otherwise :class:`SmartboardError` is raised.
+    Single choke point for the public API and for ``process_pdf``.
+    """
+    if bg_target is None:
+        return None
+    try:
+        channels = tuple(bg_target)
+    except TypeError:
+        channels = ()
+    if len(channels) != 3 or any(
+        isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 255
+        for v in channels
+    ):
+        raise SmartboardError(
+            f"bg_target must be a 3-tuple (R, G, B) of ints 0-255 "
+            f"(got {bg_target!r})"
+        )
+    return channels
+
+
+def invert_or_remap(
+    region: np.ndarray,
+    original: Optional[np.ndarray] = None,
+    *,
+    bg_target: Optional[Tuple[int, int, int]] = None,
+    keep_colors: AbstractSet[str] = frozenset(),
+) -> np.ndarray:
+    """Apply the in-region pixel operation to *region* (see ADR 0002, D1/D2).
+
+    Semantics:
+
+    * ``bg_target is None`` → strict ``255 − v`` (``np.bitwise_not``),
+      bit-identical to v0.4.1.
+    * ``bg_target = (R, G, B)`` (user-facing **RGB**) → linear per-channel
+      remap ``v' = T_c · (255 − v) / (255 − B_c)`` where ``B_c`` is the p25
+      of channel c in *region* (i.e. after any optional CLAHE/cleaning),
+      clamped to ``[0, 220]`` so the denominator stays ≥ 35.  Computed in
+      float32 with round-half-up, clipped to 0–255.  Anchors: ``v = B_c →
+      T_c`` (the board background lands exactly on the target colour) and
+      ``v = 255 → 0`` (white stays black).
+    * ``keep_colors`` → pixels matching any of the requested marker colours
+      keep their **original** values.  The exclusion mask is computed on
+      *original* (default: *region*, i.e. before any pre-processing) and
+      applied **last** — it takes precedence over both complement and remap.
+
+    Parameters
+    ----------
+    region:
+        ``uint8`` BGR image (3 channels) to transform.
+    original:
+        Original (pre-CLAHE/clean) version of *region* used for the
+        keep-colour exclusion; must have the same shape (defaults to
+        *region*).
+    bg_target:
+        Target background as ``(R, G, B)`` ints 0–255, or ``None`` for the
+        strict ``255 − v`` complement.
+    keep_colors:
+        Subset of :data:`KEEPABLE_COLORS` to exclude from the transformation.
+
+    Returns
+    -------
+    np.ndarray
+        Transformed ``uint8`` BGR image, same shape as *region*.
+    """
+    if region is None or not isinstance(region, np.ndarray) or region.dtype != np.uint8:
+        raise SmartboardError("invert_or_remap expects a uint8 ndarray")
+    if region.ndim != 3 or region.shape[2] != 3:
+        raise SmartboardError("invert_or_remap expects a BGR image with 3 channels")
+    orig = region if original is None else original
+    if original is not None and (
+        orig is None
+        or not isinstance(orig, np.ndarray)
+        or orig.dtype != np.uint8
+        or orig.shape != region.shape
+    ):
+        raise SmartboardError(
+            "original must be a uint8 BGR ndarray with the same shape as region"
+        )
+    bg_target = validate_bg_target(bg_target)
+    if bg_target is None:
+        # The legacy path: bitwise_not on uint8 is exactly 255 − v (no
+        # overflow, no rounding) and must stay bit-identical to v0.4.1.
+        transformed = np.bitwise_not(region)
+    else:
+        # p25 per channel of the remap input (BGR order), clamped so that
+        # the denominator 255 − B_c never degenerates (≥ 35).
+        b = np.clip(np.percentile(region, 25, axis=(0, 1)), 0.0, 220.0).astype(np.float32)
+        # bg_target is user-facing RGB, internal arrays are BGR.
+        t = np.array([bg_target[2], bg_target[1], bg_target[0]], dtype=np.float32)
+        scale = t / (255.0 - b)
+        # round-half-up: floor(x + 0.5) (x ≥ 0 here).
+        transformed = np.clip(
+            np.floor((255.0 - region.astype(np.float32)) * scale + 0.5), 0, 255
+        ).astype(np.uint8)
+    if keep_colors:
+        # Exclusion is the LAST step: kept marker pixels get their original
+        # values, taking precedence over complement and remap.
+        m = color_mask(orig, keep_colors)
+        transformed = np.where(m[..., None], orig, transformed)
+    return transformed
+
+
+def invert_region(
+    img: np.ndarray,
+    rect: Rect,
+    pad: int = 0,
+    *,
+    bg_target: Optional[Tuple[int, int, int]] = None,
+    keep_colors: AbstractSet[str] = frozenset(),
+) -> np.ndarray:
+    """Return a copy of *img* with only the pixels inside *rect* transformed.
+
+    The default transformation is the strict pixel inversion
     ``channel_new = 255 − channel_old`` for every channel, which naturally
-    handles anti-aliasing, grey scales and colour marks.  Pixels outside the
-    rectangle are copied unchanged.
+    handles anti-aliasing, grey scales and colour marks.  With
+    *bg_target*/*keep_colors* the in-region operation is
+    :func:`invert_or_remap` (target-background remap and/or preserved marker
+    colours) instead.  Pixels outside the rectangle are copied unchanged.
 
     Parameters
     ----------
@@ -114,6 +306,12 @@ def invert_region(img: np.ndarray, rect: Rect, pad: int = 0) -> np.ndarray:
         the image bounds.
     pad:
         Optional extra padding (pixels) around *rect*, clamped to the bounds.
+    bg_target:
+        Target background ``(R, G, B)`` (0–255) or ``None`` for the strict
+        ``255 − v`` complement (default).
+    keep_colors:
+        Marker colours to exclude from the transformation (see
+        :func:`invert_or_remap`).
     """
     if img is None or not isinstance(img, np.ndarray) or img.dtype != np.uint8:
         raise SmartboardError("invert_region expects a uint8 ndarray")
@@ -126,8 +324,10 @@ def invert_region(img: np.ndarray, rect: Rect, pad: int = 0) -> np.ndarray:
     y1 = max(0, min(height, int(rect[3]) + pad))
     out = img.copy()
     if x1 > x0 and y1 > y0:
-        # bitwise_not on uint8 is exactly 255 − v (no overflow, no rounding)
-        out[y0:y1, x0:x1] = np.bitwise_not(out[y0:y1, x0:x1])
+        # original == region here (no pre-processing), so no `original` needed
+        out[y0:y1, x0:x1] = invert_or_remap(
+            out[y0:y1, x0:x1], bg_target=bg_target, keep_colors=keep_colors
+        )
     return out
 
 
@@ -153,13 +353,31 @@ def enhance_image_ex(
     invert: bool = True,
     apply_clahe: bool = False,
     clean: bool = False,
+    *,
+    bg_target: Optional[Tuple[int, int, int]] = None,
+    keep_colors: AbstractSet[str] = frozenset(),
 ) -> Tuple[np.ndarray, DetectionResult]:
     """Detect the smartboard area and enhance **only that region**.
 
     Pipeline: detect → (optional CLAHE) → (optional cleaning) → strict
-    ``255 − v`` inversion – all limited to the detected rectangle.  When no
-    unambiguous region is found the image is returned unchanged (a warning is
-    logged).
+    ``255 − v`` inversion or target-background remap (:func:`invert_or_remap`)
+    – all limited to the detected rectangle.  When no unambiguous region is
+    found the image is returned unchanged (a warning is logged).
+
+    Parameters
+    ----------
+    img:
+        ``uint8`` BGR image (3 channels).
+    invert:
+        Apply the in-region transformation (default: on).
+    apply_clahe / clean:
+        Optional (legacy) pre-processing inside the region.
+    bg_target:
+        Target background ``(R, G, B)`` (0–255) for a linear per-channel
+        remap, or ``None`` for the strict ``255 − v`` complement (default).
+    keep_colors:
+        Marker colours to exclude from the transformation (their original
+        pixels are kept; see :func:`invert_or_remap`).
 
     Returns
     -------
@@ -183,9 +401,17 @@ def enhance_image_ex(
     x0, y0, x1, y1 = detection.rect
     result = img.copy()
     region = result[y0:y1, x0:x1]
+    # The keep-colour exclusion must be computed on the original (pre-CLAHE/
+    # clean) pixels.
+    region_orig = region.copy() if invert else None
     region = _process_region(region, apply_clahe, clean)
     if invert:
-        region = np.bitwise_not(region)
+        region = invert_or_remap(
+            region,
+            original=region_orig,
+            bg_target=bg_target,
+            keep_colors=keep_colors,
+        )
         logger.debug("Inverted colours inside detected region %s", detection.rect)
     result[y0:y1, x0:x1] = region
     return result, detection
@@ -196,9 +422,19 @@ def enhance_image(
     invert: bool = True,
     apply_clahe: bool = False,
     clean: bool = False,
+    *,
+    bg_target: Optional[Tuple[int, int, int]] = None,
+    keep_colors: AbstractSet[str] = frozenset(),
 ) -> np.ndarray:
     """Convenience wrapper around :func:`enhance_image_ex` (image only)."""
-    result, _ = enhance_image_ex(img, invert=invert, apply_clahe=apply_clahe, clean=clean)
+    result, _ = enhance_image_ex(
+        img,
+        invert=invert,
+        apply_clahe=apply_clahe,
+        clean=clean,
+        bg_target=bg_target,
+        keep_colors=keep_colors,
+    )
     return result
 
 

@@ -21,11 +21,11 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from . import __version__
 from .pdfpipeline import process_pdf
-from .processing import SmartboardError
+from .processing import KEEPABLE_COLORS, SmartboardError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 #: ``output`` stays ``None``: for a *directory* input the default output
 #: directory is "outputs" (same file names), for a *single file* input the
 #: legacy default "<stem>_inverted.pdf" next to the input is used.
+#: ``bg_target``/``keep_colors`` are stored in CLI syntax and parsed by
+#: :func:`parse_bg_target`/:func:`parse_keep_colors` (single choke point for
+#: flags and config).
 REAL_DEFAULTS: Dict[str, Any] = {
     "input": "inputs",
     "output": None,
@@ -42,6 +45,8 @@ REAL_DEFAULTS: Dict[str, Any] = {
     "clean": False,
     "crop": False,
     "debug": False,
+    "bg_target": "complement",
+    "keep_colors": "red,green",
 }
 
 
@@ -132,6 +137,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep the full page size (default).",
     )
     parser.add_argument(
+        "--bg-target",
+        dest="bg_target",
+        default=None,
+        help=(
+            "Ziel-Hintergrund des Boards: 'complement' (Default, strikt 255−v) "
+            "oder 'R,G,B' (jeweils 0–255), z.B. '255,255,255' = reinweiß."
+        ),
+    )
+    parser.add_argument(
+        "--keep-colors",
+        dest="keep_colors",
+        default=None,
+        help=(
+            "Markerfarben, die unverändert bleiben (kommaseparat aus "
+            "red,green,blue,yellow; 'none' = alles invertieren). "
+            "Default: red,green."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         default=None,
@@ -158,6 +182,61 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_bg_target(value: str) -> Optional[Tuple[int, int, int]]:
+    """Parse a ``--bg-target`` flag / config value (single choke point).
+
+    ``"complement"`` (case-insensitive) → ``None`` (strict ``255 − v``);
+    ``"R,G,B"`` (whitespace-tolerant) → 3-tuple of ints 0–255.  Anything
+    else raises :class:`SmartboardError`.
+    """
+    text = str(value).strip()
+    if text.lower() == "complement":
+        return None
+    parts = [p.strip() for p in text.split(",")]
+    channels: List[int] = []
+    for part in parts:
+        # isascii() guards against Unicode digits (e.g. "²") for which
+        # str.isdigit() is True but int() raises ValueError.
+        if not (part.isascii() and part.isdigit()):
+            raise SmartboardError(
+                f"invalid --bg-target '{value}': expected 'complement' or "
+                f"'R,G,B' with each channel an integer 0-255"
+            )
+        channel = int(part)
+        if not 0 <= channel <= 255:
+            raise SmartboardError(
+                f"invalid --bg-target '{value}': each channel must be 0-255"
+            )
+        channels.append(channel)
+    if len(channels) != 3:
+        raise SmartboardError(
+            f"invalid --bg-target '{value}': expected 'complement' or "
+            f"'R,G,B' with exactly 3 channels"
+        )
+    return tuple(channels)
+
+
+def parse_keep_colors(value: str) -> FrozenSet[str]:
+    """Parse a ``--keep-colors`` flag / config value (single choke point).
+
+    ``"none"`` → empty frozenset (everything gets transformed); otherwise a
+    comma-separated subset of :data:`KEEPABLE_COLORS` (case-insensitive,
+    whitespace-tolerant).  Unknown names raise :class:`SmartboardError`.
+    """
+    text = str(value).strip().lower()
+    if text == "none":
+        return frozenset()
+    colors = frozenset(part.strip() for part in text.split(",") if part.strip())
+    unknown = colors - KEEPABLE_COLORS
+    if unknown:
+        raise SmartboardError(
+            f"invalid --keep-colors '{value}': unknown color(s) "
+            f"{', '.join(sorted(unknown))} (allowed: "
+            f"{', '.join(sorted(KEEPABLE_COLORS))} or 'none')"
+        )
+    return colors
+
+
 #: Allowed config keys with their expected types (``null``/missing = default).
 _CONFIG_TYPES: Dict[str, Any] = {
     "input": str,
@@ -168,6 +247,8 @@ _CONFIG_TYPES: Dict[str, Any] = {
     "clean": bool,
     "crop": bool,
     "debug": bool,
+    "bg_target": str,
+    "keep_colors": str,
 }
 
 
@@ -199,7 +280,18 @@ def resolve_options(args: argparse.Namespace, config: dict) -> dict:
     from an explicit one.
     """
     resolved: Dict[str, Any] = {}
-    for name in ("input", "output", "dpi", "invert", "clahe", "clean", "crop", "debug"):
+    for name in (
+        "input",
+        "output",
+        "dpi",
+        "invert",
+        "clahe",
+        "clean",
+        "crop",
+        "debug",
+        "bg_target",
+        "keep_colors",
+    ):
         value = getattr(args, name)
         if value is None:
             value = config.get(name, REAL_DEFAULTS[name])
@@ -266,6 +358,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     input_path = Path(opts["input"]).expanduser().resolve()
     output_path = Path(opts["output"]).expanduser() if opts["output"] is not None else None
 
+    # Parse the transformation options (same choke point for flag and config;
+    # a JSON ``null`` falls back to the real default, like for other keys).
+    try:
+        bg_target = parse_bg_target(
+            opts["bg_target"] if opts["bg_target"] is not None else REAL_DEFAULTS["bg_target"]
+        )
+        keep_colors = parse_keep_colors(
+            opts["keep_colors"] if opts["keep_colors"] is not None else REAL_DEFAULTS["keep_colors"]
+        )
+    except SmartboardError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        return 1
+
     try:
         jobs = _plan_jobs(input_path, output_path)
     except SmartboardError as e:
@@ -296,6 +401,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 clean=bool(opts["clean"]),
                 crop=bool(opts["crop"]),
                 debug_dir=debug_dir,
+                bg_target=bg_target,
+                keep_colors=keep_colors,
             )
             logger.info("Done: %s", result.summary())
         except SmartboardError as exc:

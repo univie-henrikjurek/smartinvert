@@ -170,3 +170,250 @@ class TestImagesToPdf:
     def test_bad_image_raises(self, tmp_path):
         with pytest.raises(processing.SmartboardError):
             processing.images_to_pdf([np.zeros((10, 10), dtype=np.uint8)], tmp_path / "x.pdf")
+
+
+# --- Phase 3: invert_or_remap / color_mask / keep-colour priority (ADR 0002) ---
+
+
+class TestInvertOrRemap:
+    """Phase 3 (ADR 0002, D1 / P3-FR-9): the in-region pixel operation."""
+
+    def test_flat_region_lands_exactly_on_target(self):
+        """Anchor: v = B_c (p25 of the channel) -> exactly T_c."""
+        region = np.full((64, 64, 3), 30, dtype=np.uint8)
+        out = processing.invert_or_remap(region, bg_target=(255, 255, 255))
+        assert np.array_equal(out, np.full_like(region, 255))
+
+    def test_white_pixel_maps_to_black(self):
+        """Anchor: v = 255 -> 0 (white stays black)."""
+        region = np.full((64, 64, 3), 30, dtype=np.uint8)
+        region[32, 32] = 255
+        out = processing.invert_or_remap(region, bg_target=(255, 255, 255))
+        assert np.array_equal(out[32, 32], (0, 0, 0))
+        assert np.array_equal(out[0, 0], (255, 255, 255))  # anchor stays exact
+
+    def test_monotone_decreasing(self):
+        """v = 30 < 100 < 200 < 255  =>  v' strictly decreasing.
+
+        p25 stays 30 (the other values are < 0.1 % of the pixels), so with
+        T = 255: v' = 255 * (255 - v) / (255 - 30) -> 255, 176, 62, 0.
+        """
+        region = np.full((64, 64, 3), 30, dtype=np.uint8)
+        region[1, 1], region[2, 2], region[3, 3] = 100, 200, 255
+        out = processing.invert_or_remap(region, bg_target=(255, 255, 255))
+        values = [int(out[0, 0, 0]), int(out[1, 1, 0]), int(out[2, 2, 0]), int(out[3, 3, 0])]
+        assert values == [255, 176, 62, 0]
+        assert values == sorted(values, reverse=True)
+
+    def test_bg_target_none_is_bit_identical_to_bitwise_not(self):
+        """The legacy path (bg_target=None) must stay bit-identical to the
+        v0.4.1 np.bitwise_not – no float round-trip (P3-D-1)."""
+        rng = np.random.default_rng(7)
+        region = rng.integers(0, 256, size=(97, 63, 3), dtype=np.uint8)
+        out = processing.invert_or_remap(region)
+        assert out.shape == region.shape and out.dtype == np.uint8
+        assert np.array_equal(out, np.bitwise_not(region))
+
+    def test_mixed_half_dark_half_white(self):
+        """Half 30 (-> target 255) and half 255 (-> 0); p25 = 30."""
+        region = np.full((64, 64, 3), 30, dtype=np.uint8)
+        region[:, 32:] = 255
+        out = processing.invert_or_remap(region, bg_target=(255, 255, 255))
+        assert (out[:, :32] == 255).all()
+        assert (out[:, 32:] == 0).all()
+
+    def test_p25_above_220_is_clamped(self):
+        """p25 = 250 > 220 -> B_c is clamped to 220 (denominator >= 35, no
+        division explosion): v = 250 -> 255 * 5 / (255 - 220) = 36.43 -> 36
+        (round-half-up), v = 255 -> 0."""
+        region = np.full((64, 64, 3), 250, dtype=np.uint8)
+        region[:10, :10] = 255  # < 25 % of the pixels, p25 stays 250
+        out = processing.invert_or_remap(region, bg_target=(255, 255, 255))
+        assert np.array_equal(out[20, 20], (36, 36, 36))
+        assert np.array_equal(out[0, 0], (0, 0, 0))
+
+    def test_non_square_target_has_per_channel_scale(self):
+        """bg_target is user-facing RGB (internally BGR); each channel uses
+        its own T_c.  The anchor pixel (v = B_c = 30) lands exactly on the
+        target colour in every channel."""
+        region = np.full((8, 8, 3), 30, dtype=np.uint8)
+        out = processing.invert_or_remap(region, bg_target=(255, 250, 240))
+        # (R, G, B) = (255, 250, 240)  <=>  BGR (240, 250, 255)
+        assert (out == np.array((240, 250, 255), dtype=np.uint8)).all()
+
+
+class TestValidateBgTarget:
+    """Phase 3 review fix: ``bg_target`` is validated centrally in the
+    public API (``invert_or_remap`` / :func:`validate_bg_target`), not only
+    in ``process_pdf`` — bad values must raise SmartboardError, never
+    silently produce wrong pixels or leak a raw TypeError/ValueError."""
+
+    def test_none_passes_through(self):
+        assert processing.validate_bg_target(None) is None
+
+    def test_tuple_passes_through(self):
+        assert processing.validate_bg_target((255, 255, 255)) == (255, 255, 255)
+
+    def test_list_is_normalised_to_tuple(self):
+        assert processing.validate_bg_target([10, 20, 30]) == (10, 20, 30)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            (300, 0, 0),    # out of range
+            (0, -5, 128),   # negative
+            (255, 255),     # too short
+            (255, 255, 255, 10),  # too long
+            (True, 0, 0),   # bool rejected
+            ("255", 0, 0),  # non-int
+            (255.0, 0, 0),  # float rejected (strict ints)
+            "255,255,255",  # raw string (parser's job, not this one)
+            255,            # scalar, not a 3-sequence
+        ],
+    )
+    def test_invalid_raises(self, value):
+        with pytest.raises(processing.SmartboardError):
+            processing.validate_bg_target(value)
+
+    def test_invert_or_remap_rejects_bad_bg_target(self):
+        region = np.full((8, 8, 3), 30, dtype=np.uint8)
+        with pytest.raises(processing.SmartboardError):
+            processing.invert_or_remap(region, bg_target=(300, -5, 128))
+        with pytest.raises(processing.SmartboardError):
+            processing.invert_or_remap(region, bg_target=(255, 255, 300))
+        # valid list input is accepted end-to-end
+        out = processing.invert_or_remap(region, bg_target=[255, 255, 255])
+        assert (out == 255).all()
+
+
+class TestColorMask:
+    """Phase 3 (ADR 0002, D2): marker-colour masks (BGR, int16)."""
+
+    @staticmethod
+    def flat(color):
+        return np.full((64, 64, 3), color, dtype=np.uint8)
+
+    @pytest.mark.parametrize(
+        ("color", "name"),
+        [
+            ((0, 0, 255), "red"),  # BGR
+            ((0, 255, 0), "green"),
+            ((255, 0, 0), "blue"),
+            ((0, 255, 255), "yellow"),
+        ],
+    )
+    def test_pure_colour_fully_masked(self, color, name):
+        mask = processing.color_mask(self.flat(color), {name})
+        assert mask.shape == (64, 64)
+        assert mask.dtype == bool
+        assert mask.all()
+
+    def test_white_never_masked(self):
+        img = self.flat((255, 255, 255))
+        for color in sorted(processing.KEEPABLE_COLORS):
+            assert not processing.color_mask(img, {color}).any()
+
+    def test_gray_never_masked(self):
+        img = self.flat((200, 200, 200))  # chalk gray: R == G == B
+        assert not processing.color_mask(img, set(processing.KEEPABLE_COLORS)).any()
+
+    def test_dark_noise_below_r_min_not_masked(self):
+        """Reddish flicker with R < 80 must never count, even if "dominant"."""
+        img = self.flat((60, 5, 10))  # BGR = RGB(10, 5, 60): R = 10 < 80
+        assert not processing.color_mask(img, set(processing.KEEPABLE_COLORS)).any()
+
+    def test_red_above_r_min_masked(self):
+        img = self.flat((15, 20, 90))  # BGR = RGB(90, 20, 15): R = 90 >= 80, dominant
+        assert processing.color_mask(img, {"red"}).all()
+
+    def test_delta_boundary_is_strict_greater(self):
+        """r == g + 40 must NOT match (strict '>'), r == g + 41 must."""
+        edge = self.flat((10, 81, 121))  # RGB(121, 81, 10): r == g + 40
+        assert not processing.color_mask(edge, {"red"}).any()
+        over = self.flat((10, 81, 122))  # RGB(122, 81, 10): r == g + 41
+        assert processing.color_mask(over, {"red"}).all()
+
+    def test_yellow_is_not_red_or_green(self):
+        img = self.flat((0, 255, 255))  # BGR yellow: R == G == 255 > B + 40
+        assert not processing.color_mask(img, {"red"}).any()
+        assert not processing.color_mask(img, {"green"}).any()
+        assert processing.color_mask(img, {"yellow"}).all()
+
+    def test_unknown_color_raises(self):
+        img = self.flat((0, 0, 255))
+        with pytest.raises(processing.SmartboardError, match="unknown color"):
+            processing.color_mask(img, {"magenta"})
+        with pytest.raises(processing.SmartboardError):
+            processing.color_mask(img, {"red", "magenta"})
+
+    def test_rejects_bad_array(self):
+        with pytest.raises(processing.SmartboardError):
+            processing.color_mask(np.zeros((10, 10), dtype=np.uint8), {"red"})  # 2-D
+        with pytest.raises(processing.SmartboardError):
+            processing.color_mask(np.zeros((10, 10, 3), dtype=np.float32), {"red"})  # float
+        with pytest.raises(processing.SmartboardError):
+            processing.color_mask(np.zeros((10, 10, 4), dtype=np.uint8), {"red"})  # 4 channels
+        with pytest.raises(processing.SmartboardError):
+            processing.color_mask(None, {"red"})
+
+    def test_empty_color_set_is_all_false(self):
+        img = self.flat((0, 0, 255))
+        assert not processing.color_mask(img, frozenset()).any()
+
+
+class TestKeepColorsPriority:
+    """Phase 3 (ADR 0002, D1/D2 / P3-FR-10): kept marker pixels take
+    precedence over both complement and remap; the exclusion mask is
+    computed on the *original* (pre-processing) image and applied last."""
+
+    @staticmethod
+    def board_with_red_block():
+        # gray board with an 8x8 red marker (RGB 255,0,0 == BGR (0,0,255))
+        img = np.full((64, 64, 3), (80, 80, 80), dtype=np.uint8)
+        img[28:36, 28:36] = (0, 0, 255)
+        return img
+
+    def test_kept_red_beats_remap(self):
+        img = self.board_with_red_block()
+        out = processing.invert_or_remap(img, bg_target=(255, 255, 255), keep_colors={"red"})
+        # the red marker keeps its original values (RGB 255,0,0)
+        assert (out[28:36, 28:36] == np.array((0, 0, 255), dtype=np.uint8)).all()
+        # the gray background (p25 = 80) lands exactly on the target
+        assert (out[0, 0] == 255).all()
+
+    def test_kept_red_beats_complement(self):
+        img = self.board_with_red_block()
+        out = processing.invert_or_remap(img, bg_target=None, keep_colors={"red"})
+        red = np.zeros((64, 64), dtype=bool)
+        red[28:36, 28:36] = True
+        assert (out[red] == img[red]).all()  # kept pixels == original
+        assert (out[~red] == np.bitwise_not(img[~red])).all()  # rest: strict 255 - v
+
+    def test_exclusion_mask_uses_original_not_region(self):
+        """The exclusion is computed on `original`, not on the transformed
+        region: even if the marker pixels are altered in the region (as by
+        pre-processing), the original marker positions keep their original
+        values."""
+        original = np.full((16, 16, 3), (80, 80, 80), dtype=np.uint8)
+        original[6:10, 6:10] = (0, 0, 255)  # red in the original
+        region = original.copy()
+        region[6:10, 6:10] = (10, 10, 10)  # "pre-processed" away in region
+        out = processing.invert_or_remap(
+            region, original, bg_target=(255, 255, 255), keep_colors={"red"}
+        )
+        assert (out[6:10, 6:10] == np.array((0, 0, 255), dtype=np.uint8)).all()
+
+    def test_original_shape_mismatch_raises(self):
+        region = np.zeros((8, 8, 3), dtype=np.uint8)
+        with pytest.raises(processing.SmartboardError, match="original"):
+            processing.invert_or_remap(region, np.zeros((4, 4, 3), dtype=np.uint8))
+
+    def test_rejects_bad_input(self):
+        with pytest.raises(processing.SmartboardError):
+            processing.invert_or_remap(np.zeros((10, 10), dtype=np.uint8))
+        with pytest.raises(processing.SmartboardError):
+            processing.invert_or_remap(np.zeros((10, 10, 4), dtype=np.uint8))
+        with pytest.raises(processing.SmartboardError):
+            processing.invert_or_remap(np.zeros((10, 10, 3), dtype=np.float32))
+        with pytest.raises(processing.SmartboardError):
+            processing.invert_or_remap(None)

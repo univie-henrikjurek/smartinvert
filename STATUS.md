@@ -97,38 +97,54 @@ gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
   fresh clone (24/24 commits by Henrik Jurek, no placeholder e-mail left in
   any blob, no tokens or keys anywhere).
 
-**ADR 0003 – crop to board rect (branch `feature/crop-to-board`, 2026-11-15,
-not yet merged; no version bump – 0.5.0 is reserved for
-`feature/color-options`):**
-- Implemented per spec: post-stage `_save_cropped()` in `pdfpipeline.py`
-  (in-memory round-trip, `show_pdf_page` + `clip`, vector-exact 1:1),
-  `--crop`/`--no-crop` (CLI + JSON config key), GUI checkbox, default off
-  (page-faithful, unchanged). Real runs verified (with `--crop`:
-  board-sized page 299.4×821.4 pt; default: A4 595×842 pt).
-- Key design facts: detection never runs on rotated pages (A-11) → rotated
-  pages keep full size automatically; defensive `remove_rotation()` branch
-  for contract violations; no board anywhere → page-faithful output +
-  WARNING (never an empty file); `rect_pt` stored on `PageResult` before the
-  `do_something` fork so `--no-invert --crop` works too.
-- Tests: 108 passed + 1 module skip (new `tests/test_gui.py`, headless has
-  no tkinter) — geometry (±0.5 pt), pixel equivalence vs. a separate
-  `crop=False` run (2-px-eroded interior max == 0, all 3 methods),
-  rotation mixed-doc, no-board fallback, `crop=False` regression, CLI/
-  config plumbing, derotation-matrix unit tests. Coverage 89.72 % (gate 80).
-- Review: 0 critical / 0 moderate. Fixed pre-commit: stale test NOTE
-  (after ADR correction), stale STATUS test count, `detection.rect is not
-  None` guard. Known debt (small, documented): GUI label German in an
-  otherwise English UI (ADR-specified, consistent with the color-options
-  branch decision).
-- ADR correction (2026-11-15): the D2 r=90 reference formula/value in the
+**v0.5.0 – crop + color options (merged 2026-11-15, tag v0.5.0).** Two
+independent features, developed on parallel branches and merged in order
+(crop first per user request, then colors rebased on top):
+
+**ADR 0003 – crop to board rect** (`--crop` / `--no-crop`, default off):
+- Post-stage `_save_cropped()` in `pdfpipeline.py` (in-memory round-trip,
+  `show_pdf_page` + `clip`, vector-exact 1:1): every page with a detected
+  board is re-sized to exactly that rectangle; pages without a board (incl.
+  all rotated pages, A-11) keep full size; no board anywhere → page-faithful
+  output + WARNING (never an empty file). CLI + JSON config key `crop`,
+  GUI checkbox. `rect_pt` stored before the `do_something` fork so
+  `--no-invert --crop` works. Detection, the 3 output methods, verification
+  and debug are untouched.
+- ADR correction (2026-11-15): the D2 r=90 derotation formula/value in the
   first draft confounded x and y (350×350 square for a 200×350 rect);
   corrected to `u = (v.y0, H−v.x1, v.y1, H−v.x0)`, empirically verified.
   Production code unaffected (uses `remove_rotation()`, not the formula).
-- Gaps in the task text, resolved during implementation: (1) the README had
-  no config-file section in the v0.4.1 state → a minimal one was added to
-  document the new `crop` key (bool); (2) the stated window height
-  `660x690 → 660x760` did not match the actual `660x560` → the stated delta
-  (+70 px, "one line more") was applied → `660x630`.
+- Review: 0 critical / 0 moderate; small pre-commit fixes (None guard,
+  stale notes).
+
+**ADR 0002 – target background + preserved marker colours**
+(`--bg-target {complement|R,G,B}`, `--keep-colors {red,green,blue,yellow|none}`):
+- `bg_target=complement` (default) = strict `255−v`, bit-identical to v0.4.1;
+  `R,G,B` = linear per-channel remap `v' = T_c·(255−v)/(255−B_c)`,
+  B_c = p25 per channel in the region clamped [0,220] — a dark-gray board
+  can land on pure white instead of beige (user request).
+- `keep_colors` default `red,green` (deliberate breaking change vs. v0.4.1,
+  P3-D-1): marker pixels keep their ORIGINAL values (mask: dominant channel
+  ≥ 80 and ≥ 40 above the others; computed on the original, applied last →
+  precedence over complement/remap). Exact v0.4.1: `--bg-target complement
+  --keep-colors none`.
+- Core: one central pixel op `processing.invert_or_remap` (+ `color_mask`,
+  `validate_bg_target`) — all four former `np.bitwise_not` sites route
+  through it. JSON config keys `bg_target` / `keep_colors` (null = default).
+  GUI: "Zielhintergrund" combobox (Complement/Reinweiß) + "Rot/Grün erhalten"
+  checkboxes (both default on); combobox stays readonly after runs.
+- The two features are orthogonal (crop = output stage, colors = pixel stage,
+  mask/reference are region-local) and merge in either order.
+- Review: 0 critical; both moderate findings fixed (Unicode-digit guard in
+  `parse_bg_target` → clean error; central `validate_bg_target` in the public
+  API). Known debt (small, documented): `parse_keep_colors("")` silently =
+  none (fixed by test as implemented); some GUI labels German in an otherwise
+  English UI (ADR-specified).
+
+**Combined verification after rebase:** full suite green (colors 165 +
+crop 20, GUI module headless-skipped), coverage gate met; CLI smoke with all
+three flags (`--crop --bg-target 255,255,255 --keep-colors red,green`) and
+GUI instantiation verified. Tagged **v0.5.0**.
 
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
@@ -265,4 +281,6 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
 ## Next Step
-None – project is DONE. Repo pushed as v0.3.0.
+Phase 5 (color options) is ready on branch `feature/color-options` in a PR
+(CI 3.9 + 3.13 runs there). After user sign-off: merge to master, tag
+v0.5.0, update the release ZIP links, done.

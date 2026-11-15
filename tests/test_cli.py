@@ -365,3 +365,158 @@ class TestCropCli:
         args = cli.build_parser().parse_args([])
         opts = cli.resolve_options(args, {})
         assert opts["crop"] is False
+
+class TestPhase3Parsers:
+    """Phase 3 (P3-D-2 / ADR 0002 D3): the central parsers for
+    --bg-target / --keep-colors (single choke point for flag and config)."""
+
+    @pytest.mark.parametrize("text", ["complement", "COMPLEMENT", "  Complement  "])
+    def test_parse_bg_target_complement(self, text):
+        assert cli.parse_bg_target(text) is None
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("255,255,255", (255, 255, 255)),
+            (" 255 , 255 , 255 ", (255, 255, 255)),
+            ("0,0,0", (0, 0, 0)),
+        ],
+    )
+    def test_parse_bg_target_rgb(self, text, expected):
+        assert cli.parse_bg_target(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        ["bogus", "255,255", "255,255,256", "-1,0,0", "", "255;255;255", "²,0,0", "②,3,4"],
+    )
+    def test_parse_bg_target_invalid(self, text):
+        # includes Unicode digits ("²", "②"): str.isdigit() is True for them
+        # but they must fail cleanly, not with a raw ValueError traceback
+        with pytest.raises(cli.SmartboardError):
+            cli.parse_bg_target(text)
+
+    @pytest.mark.parametrize("text", ["none", "NONE"])
+    def test_parse_keep_colors_none(self, text):
+        assert cli.parse_keep_colors(text) == frozenset()
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("red,green", frozenset({"red", "green"})),
+            ("RED, Green", frozenset({"red", "green"})),
+            ("blue, yellow", frozenset({"blue", "yellow"})),
+        ],
+    )
+    def test_parse_keep_colors_valid(self, text, expected):
+        assert cli.parse_keep_colors(text) == expected
+
+    @pytest.mark.parametrize("text", ["magenta", "red,magenta"])
+    def test_parse_keep_colors_unknown(self, text):
+        with pytest.raises(cli.SmartboardError, match="unknown color"):
+            cli.parse_keep_colors(text)
+
+    def test_parse_keep_colors_empty_entries_ignored(self):
+        """Tested as implemented: empty entries in the comma list are
+        dropped, so "red,,green" parses like "red,green"; an entirely empty
+        list parses to the empty set (== "none")."""
+        assert cli.parse_keep_colors("red,,green") == frozenset({"red", "green"})
+        assert cli.parse_keep_colors("red,") == frozenset({"red"})
+        assert cli.parse_keep_colors(",") == frozenset()
+        assert cli.parse_keep_colors("") == frozenset()
+
+    def test_real_defaults_parse_to_complement_and_red_green(self):
+        """P3-D-1: the new (breaking) real defaults are complement +
+        red,green; exact v0.4.1 stays reproducible via complement + none."""
+        assert cli.parse_bg_target(cli.REAL_DEFAULTS["bg_target"]) is None
+        assert cli.parse_keep_colors(cli.REAL_DEFAULTS["keep_colors"]) == frozenset(
+            {"red", "green"}
+        )
+
+
+class TestPhase3CliFlags:
+    """Phase 3 (P3-FR-9/10): --bg-target / --keep-colors through the full CLI."""
+
+    def test_bg_target_and_keep_colors_run_end_to_end(self, tmp_path):
+        src = tmp_path / "board.pdf"
+        synth.make_pdf(src, [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        outd = tmp_path / "outputs"
+        result = run_cli(
+            "--input", str(src),
+            "--output", str(outd),
+            "--bg-target", "255,255,255",
+            "--keep-colors", "red",
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert (outd / "board.pdf").is_file()
+
+    def test_bg_target_bogus_fails_with_error(self, tmp_path):
+        src = tmp_path / "board.pdf"
+        synth.make_pdf(src, [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        result = run_cli(
+            "--input", str(src),
+            "--output", str(tmp_path / "outputs"),
+            "--bg-target", "bogus",
+        )
+        assert result.returncode == 1
+        assert "[ERROR]" in result.stderr
+        assert "bg-target" in result.stderr
+
+    def test_keep_colors_bogus_fails_with_error(self, tmp_path, capsys):
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        synth.make_pdf(ind / "b.pdf", [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        rc = cli.main(
+            [
+                "--input", str(ind),
+                "--output", str(tmp_path / "out"),
+                "--keep-colors", "magenta",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "[ERROR]" in err
+        assert "keep-colors" in err
+
+    # --- Phase 3 options through the JSON config (P3-D-2) -----------------
+
+    def test_config_file_new_keys_take_effect(self, tmp_path):
+        """bg_target/keep_colors work via the JSON config file, not only
+        via CLI flags."""
+        src = tmp_path / "board.pdf"
+        synth.make_pdf(src, [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"bg_target": "255,255,255", "keep_colors": "red,green"}')
+        outd = tmp_path / "outputs"
+        result = run_cli(
+            "--input", str(src), "--output", str(outd), "--config", str(cfg)
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert (outd / "board.pdf").is_file()
+
+    def test_config_file_null_falls_back_to_real_defaults(self, tmp_path):
+        """null = documented "fall back to default" semantics: complement +
+        red,green."""
+        src = tmp_path / "board.pdf"
+        synth.make_pdf(src, [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"bg_target": null, "keep_colors": null}')
+        result = run_cli(
+            "--input", str(src),
+            "--output", str(tmp_path / "outputs"),
+            "--config", str(cfg),
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+
+    def test_config_file_invalid_new_key_fails_cleanly(self, tmp_path, capsys):
+        """A bad bg_target in the config must produce the same clean error
+        as a bad CLI flag (no traceback, NFR-5)."""
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        synth.make_pdf(ind / "b.pdf", [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"bg_target": "255,999,0"}')
+        rc = cli.main(
+            ["--input", str(ind), "--output", str(tmp_path / "out"), "--config", str(cfg)]
+        )
+        assert rc == 1
+        assert "[ERROR]" in capsys.readouterr().err

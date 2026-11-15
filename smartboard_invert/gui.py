@@ -5,6 +5,8 @@ The GUI mirrors the CLI options but presents them in a graphical form:
 * File chooser for the input PDF.
 * DPI slider (50‑300).
 * Checkboxes for *Invert*, *CLAHE*, *Noise cleaning* and *Crop to board*.
+* *Target background* combobox (complement or pure white) and checkboxes to
+  keep the red/green marker colours un-inverted.
 * A *Preview* button that shows the first page before/after processing.
 * A *Run* button that processes the entire document and displays a progress bar.
 
@@ -25,6 +27,7 @@ from tkinter import (
     Checkbutton,
     IntVar,
     DoubleVar,
+    StringVar,
     TclError,
     filedialog,
     messagebox,
@@ -41,12 +44,16 @@ from .processing import SmartboardError
 
 logger = logging.getLogger(__name__)
 
+#: Choices for the target-background combobox (index 0 = strict complement,
+#: index 1 = pure white).
+BG_TARGET_CHOICES = ("Complement (255 − v)", "Reinweiß (255,255,255)")
+
 
 class SmartboardGUI:
     def __init__(self, master: Tk):
         self.master = master
         master.title("Smartboard PDF Inverter")
-        master.geometry("660x630")
+        master.geometry("660x760")
         self.create_widgets()
         # Thread-safe event queue: worker threads must never touch Tk
         # widgets directly (tkinter is not thread-safe); they enqueue
@@ -104,6 +111,23 @@ class SmartboardGUI:
         Checkbutton(opts_frame, text="Noise cleaning (legacy)", variable=self.clean_var).grid(row=3, column=0, columnspan=2, sticky="w")
         self.crop_var = IntVar(value=0)
         Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=4, column=0, columnspan=2, sticky="w")
+        # Target background + kept marker colours (v0.5.0)
+        Label(opts_frame, text="Zielhintergrund:").grid(row=5, column=0, sticky="w")
+        self.bg_var = StringVar(value=BG_TARGET_CHOICES[0])
+        # readonly by design; _reset_ui() restores the state after the
+        # generic enable/disable walk of _set_controls_state()
+        self.bg_combo = ttk.Combobox(
+            opts_frame,
+            textvariable=self.bg_var,
+            values=BG_TARGET_CHOICES,
+            state="readonly",
+            width=28,
+        )
+        self.bg_combo.grid(row=5, column=1, columnspan=2, sticky="w", padx=5)
+        self.keep_red_var = IntVar(value=1)
+        Checkbutton(opts_frame, text="Rot erhalten", variable=self.keep_red_var).grid(row=6, column=0, columnspan=2, sticky="w")
+        self.keep_green_var = IntVar(value=1)
+        Checkbutton(opts_frame, text="Grün erhalten", variable=self.keep_green_var).grid(row=7, column=0, columnspan=2, sticky="w")
 
         # ---------- Preview ----------
         preview_frame = Frame(self.master)
@@ -122,6 +146,21 @@ class SmartboardGUI:
     def _on_dpi_change(self, _value) -> None:
         """Keep the DPI value label in sync with the slider."""
         self.dpi_value.configure(text=str(int(float(self.dpi_var.get()))))
+
+    def _transform_options(self) -> dict:
+        """Current transformation options (target background + kept colours).
+
+        Read in the calling (main) thread and handed over as plain values –
+        the same rule the thread-safe event queue is built on.
+        """
+        return {
+            "bg_target": None if self.bg_var.get() == BG_TARGET_CHOICES[0] else (255, 255, 255),
+            "keep_colors": frozenset(
+                name
+                for name, var in (("red", self.keep_red_var), ("green", self.keep_green_var))
+                if var.get()
+            ),
+        }
 
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
@@ -171,11 +210,14 @@ class SmartboardGUI:
             if not images:
                 raise SmartboardError("No pages rendered")
             first = images[0]
+            transform_options = self._transform_options()
             processed, det = processing.enhance_image_ex(
                 first,
                 invert=bool(self.invert_var.get()),
                 apply_clahe=bool(self.clahe_var.get()),
                 clean=bool(self.clean_var.get()),
+                bg_target=transform_options["bg_target"],
+                keep_colors=transform_options["keep_colors"],
             )
             if not det.found:
                 logger.warning("No smartboard region on first page: %s", det.message)
@@ -232,6 +274,7 @@ class SmartboardGUI:
             "clahe": bool(self.clahe_var.get()),
             "clean": bool(self.clean_var.get()),
             "crop": bool(self.crop_var.get()),
+            **self._transform_options(),
         }
         # Disable controls while processing.
         self._set_controls_state("disabled")
@@ -274,6 +317,8 @@ class SmartboardGUI:
                 apply_clahe=options["clahe"],
                 clean=options["clean"],
                 crop=options["crop"],
+                bg_target=options.get("bg_target"),
+                keep_colors=options.get("keep_colors", frozenset()),
                 progress=on_progress,
             )
             self._events.put(
@@ -310,6 +355,9 @@ class SmartboardGUI:
 
     def _reset_ui(self):
         self._set_controls_state("normal")
+        # _set_controls_state() sets every -state widget to "normal", which
+        # would make the target-background combobox editable – restore it.
+        self.bg_combo.configure(state="readonly")
         self.progress['value'] = 0
 
 
