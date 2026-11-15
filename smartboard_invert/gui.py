@@ -44,17 +44,30 @@ class SmartboardGUI:
     def __init__(self, master: Tk):
         self.master = master
         master.title("Smartboard PDF Inverter")
-        master.geometry("600x500")
+        master.geometry("660x560")
         self.create_widgets()
 
     def create_widgets(self):
-        # ---------- File selection ----------
+        # ---------- File/folder selection ----------
         file_frame = Frame(self.master)
         file_frame.pack(fill="x", padx=10, pady=5)
-        Label(file_frame, text="Input PDF:").pack(side="left")
-        self.input_path = Entry(file_frame, width=50)
+        Label(file_frame, text="Input:").pack(side="left")
+        self.input_path = Entry(file_frame, width=44)
         self.input_path.pack(side="left", padx=5)
-        Button(file_frame, text="Browse", command=self.browse_file).pack(side="left")
+        Button(file_frame, text="PDF…", command=self.browse_file).pack(side="left")
+        Button(file_frame, text="Folder…", command=self.browse_folder).pack(side="left")
+
+        out_frame = Frame(self.master)
+        out_frame.pack(fill="x", padx=10, pady=5)
+        Label(out_frame, text="Output (optional):").pack(side="left")
+        self.output_path = Entry(out_frame, width=44)
+        self.output_path.pack(side="left", padx=5)
+        self.output_path.insert(0, "")
+        Button(out_frame, text="Browse…", command=self.browse_output).pack(side="left")
+        Label(
+            self.master,
+            text="(empty: PDF → <name>_inverted.pdf next to the input; folder → an output folder is required)",
+        ).pack(anchor="w", padx=12)
 
         # ---------- Options ----------
         opts_frame = Frame(self.master)
@@ -93,10 +106,42 @@ class SmartboardGUI:
             self.input_path.delete(0, "end")
             self.input_path.insert(0, path)
 
-    def preview(self):
+    def browse_folder(self):
+        path = filedialog.askdirectory(title="Select a folder containing PDFs")
+        if path:
+            self.input_path.delete(0, "end")
+            self.input_path.insert(0, path)
+
+    def browse_output(self):
+        if Path(self.input_path.get().strip()).is_dir():
+            path = filedialog.askdirectory(title="Select the output folder")
+        else:
+            path = filedialog.asksaveasfilename(
+                defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")]
+            )
+        if path:
+            self.output_path.delete(0, "end")
+            self.output_path.insert(0, path)
+
+    def _resolve_input(self):
+        """Return the input path (str) or None with a warning shown."""
         pdf_path = self.input_path.get().strip()
         if not pdf_path:
-            messagebox.showwarning("Missing file", "Please select an input PDF first.")
+            messagebox.showwarning("Missing file", "Please select an input PDF or folder first.")
+            return None
+        p = Path(pdf_path)
+        if p.is_dir():
+            pdfs = sorted(p.glob("*.pdf"))
+            if not pdfs:
+                messagebox.showwarning("No PDFs", f"No .pdf files found in:\n{p}")
+                return None
+            # Preview the first PDF of the folder.
+            return str(pdfs[0])
+        return pdf_path
+
+    def preview(self):
+        pdf_path = self._resolve_input()
+        if pdf_path is None:
             return
         try:
             images = processing.pdf_to_images(pdf_path, dpi=int(self.dpi_var.get()))
@@ -136,10 +181,26 @@ class SmartboardGUI:
 
     def start_processing(self):
         pdf_path = self.input_path.get().strip()
+        out_field = self.output_path.get().strip()
         if not pdf_path:
-            messagebox.showwarning("Missing file", "Please select an input PDF first.")
+            messagebox.showwarning("Missing file", "Please select an input PDF or folder first.")
             return
-        out_path = Path(pdf_path).with_name(Path(pdf_path).stem + "_inverted.pdf")
+        in_p = Path(pdf_path)
+        if in_p.is_dir():
+            if not out_field:
+                messagebox.showwarning(
+                    "Missing output",
+                    "For folder input please specify an output folder.",
+                )
+                return
+            out_path = Path(out_field)
+        else:
+            # Empty output field keeps the legacy name next to the input.
+            out_path = (
+                Path(out_field)
+                if out_field
+                else in_p.with_name(in_p.stem + "_inverted.pdf")
+            )
         # Read the Tk variables in the main thread (Tk thread-safety) and hand
         # plain values to the worker.
         options = {

@@ -34,33 +34,37 @@ Verzeichnis lässt sich per Batch in einem Aufruf verarbeiten.
 unverändert (Warnung). Seiten mit `/Rotate ≠ 0` werden unverändert kopiert.
 `output == input` wird abgelehnt; eine defekte Datei beendet den Batch nicht.
 
-## Installation
+## Quickstart (ein Befehl)
+
+Voraussetzung: Python 3.9+ (`python3` im PATH).
 
 ```bash
-git clone <repo-url>
-cd Smartboard-Inv
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+git clone https://github.com/univie-henrikjurek/smartinvert.git
+cd smartinvert
+./start.sh -i test_input.pdf -o test_output.pdf    # Linux/macOS
+start.bat -i test_input.pdf -o test_output.pdf     # Windows
 ```
 
-Abhängigkeiten: PyMuPDF, OpenCV, NumPy, Pillow (GUI zusätzlich Tkinter).
-
-## Schnellstart (CLI)
+Der erste Lauf legt `.venv/` an und installiert die Abhängigkeiten
+(PyMuPDF, OpenCV (headless), NumPy, Pillow – GUI zusätzlich Tkinter); das
+dauert einmalig ~1–2 Minuten, danach ist jeder Start sofort fertig.
+**Ohne Argumente öffnet `./start.sh` die GUI** (Datei oder Ordner wählen).
 
 ```bash
-# Batch: alle PDFs in inputs/ -> outputs/ (gleiche Dateinamen)
-python -m smartboard_invert --input inputs --output outputs --debug -v
-
-# einzelne Datei
-python -m smartboard_invert -i inputs/test.pdf -o outputs/test.pdf
+# Batch: alle PDFs in einem Ordner (gleiche Dateinamen)
+./start.sh -i inputs/ -o outputs/ --debug
 
 # höhere Ausgabequalität (Detection + Einbettung)
-python -m smartboard_invert -i inputs/test.pdf -o out.pdf --dpi 300
+./start.sh -i inputs/test.pdf -o out.pdf --dpi 300
 ```
 
-Ohne `--output` wird bei einer einzelnen Datei `<name>_inverted.pdf` neben der
+Ohne `-o` wird bei einer einzelnen Datei `<name>_inverted.pdf` neben der
 Eingabedatei angelegt (Legacy-Verhalten).
+
+### Optionen (`smartinvert`)
+
+Nach der Installation ist das Tool auch direkt als `smartinvert`-Command
+verfügbar (`.venv/bin/smartinvert` bzw. nach `pip install .` im PATH).
 
 ### Optionen
 
@@ -81,11 +85,23 @@ Exit-Code `0` bei Erfolg, `1` wenn mindestens eine Datei fehlschlug.
 ## GUI
 
 ```bash
-python -m smartboard_invert.gui
+./start.sh                # ohne Argumente (Linux/macOS)
+start.bat                 # Windows
+# oder direkt: .venv/bin/python -m smartboard_invert.gui
 ```
 
-PDF wählen, DPI/Optionen einstellen, Vorschaubild der ersten Seite ansehen
-und **Run** klicken.
+**PDF…** oder **Ordner…** wählen (Ordner = Batch), optional ein
+**Output**-Ziel angeben, DPI/Optionen einstellen, Vorschaubild der ersten
+Seite ansehen und **Run** klicken.
+
+## Entwicklung
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .          # editierbare Installation
+.venv/bin/pip install pytest pytest-cov
+.venv/bin/pytest --cov=smartboard_invert
+```
 
 ## Tests
 
