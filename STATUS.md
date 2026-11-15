@@ -89,11 +89,12 @@ gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
 - History rewritten + force-pushed (master + tags v0.3.0/v0.4.0/v0.4.1),
   verified from an independent fresh clone: exactly the 25 project files,
   pattern scan clean, CI green (run 43725025521).
-- Remaining, **not** leaks (left as-is, user's call): 9 Phase-1/2 commits
-  are authored "Smartboard Bot <243551298+univie-henrikjurek@users.noreply.github.com>" (placeholder identity,
-  accepted earlier); old `pyproject.toml` versions in history carry the same
-  placeholder author field. Current authorship: Henrik Jurek with GitHub
-  noreply e-mail (public by design).
+- Authorship unified: the 9 Phase-1/2 commits (and old `pyproject.toml`
+  author fields in history) used the placeholder identity
+  "Smartboard Bot". Rewritten via `git filter-repo`
+  (`--commit-callback` + `--replace-text`) to Henrik Jurek / GitHub noreply
+  e-mail; history force-pushed again and re-verified from a fresh clone
+  (22/22 commits by Henrik Jurek, no placeholder strings left in any blob).
 
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
