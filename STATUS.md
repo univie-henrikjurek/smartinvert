@@ -55,6 +55,45 @@ gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
   official installer runs → venv 3.12 → sample processed; (2) uv installer
   blocked → classic fallback with system Python → identical output.
 - Docs: README/INSTALL rewritten for the no-prerequisite flow.
+- Repo is **public** now: https://github.com/univie-henrikjurek/smartinvert
+
+**v0.4.1 – Windows GUI fixes (2026-11-15):**
+- Run button crashed: `TclError: unknown option "-state"` — the disable/enable
+  loop touched direct children of the root window (Frames/Labels, which have
+  no `-state`). Fix: recursive `_set_controls_state()` walk (skips widgets
+  without the option).
+- Second bug caught by the headless GUI E2E test (xvfb, real Tk window):
+  worker thread called `master.after(0, cb)` — tkinter registers the callback
+  in the *calling* thread → `RuntimeError: main thread is not in main loop`,
+  worker died silently, GUI froze. Fix: thread-safe event queue
+  (`queue.Queue` + 100 ms poller in the main loop); worker threads only
+  enqueue callbacks.
+- DPI slider now shows a live value label (150/200/300), updated on both
+  drag and click.
+- Verified: headless E2E (Xvfb) drives the real GUI — Run → disabled
+  controls → worker → "Saved to …" dialog → controls re-enabled, output
+  written. 88/88 tests, CI green (3.9 + 3.13).
+
+**Public-repo leak check + history cleanup (2026-11-15):**
+- Full scan of every blob in the history (incl. binaries: PDFs, PNG):
+  **no private information** (no personal e-mails, tokens, keys, or local
+  machine paths). Binaries carry no metadata beyond "Qt 5.9.2".
+- `inputs/test.pdf` has no extractable text (vector drawing only); the demo
+  PNG shows the same sample board — both are the user's own sample data,
+  intentionally shipped.
+- Removed from history via `git filter-repo` (repo was fresh, no other
+  clones): `outputs/test_inverted.pdf` and 3 `__pycache__/*.pyc` files
+  (committed in Phase 1, deleted in Phase 2, but still reachable in a
+  public history; the `.pyc` files embedded sandbox build paths
+  `/root/opencode-projects/…`).
+- History rewritten + force-pushed (master + tags v0.3.0/v0.4.0/v0.4.1),
+  verified from an independent fresh clone: exactly the 25 project files,
+  pattern scan clean, CI green (run 43725025521).
+- Remaining, **not** leaks (left as-is, user's call): 9 Phase-1/2 commits
+  are authored "Smartboard Bot <243551298+univie-henrikjurek@users.noreply.github.com>" (placeholder identity,
+  accepted earlier); old `pyproject.toml` versions in history carry the same
+  placeholder author field. Current authorship: Henrik Jurek with GitHub
+  noreply e-mail (public by design).
 
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
