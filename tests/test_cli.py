@@ -134,9 +134,12 @@ class TestDebugFlag:
 
 class TestConfigAndVersion:
     def test_version(self, tmp_path):
+        from smartboard_invert import __version__
+
         result = run_cli("--version")
         assert result.returncode == 0
-        assert "0.2.0" in result.stdout
+        # track the package version instead of a hardcoded value
+        assert __version__ in result.stdout
 
     def test_config_file_defaults(self, tmp_path):
         ind = tmp_path / "inputs"
