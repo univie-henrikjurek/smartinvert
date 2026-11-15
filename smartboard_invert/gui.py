@@ -4,7 +4,7 @@ The GUI mirrors the CLI options but presents them in a graphical form:
 
 * File chooser for the input PDF.
 * DPI slider (50‑300).
-* Checkboxes for *Invert*, *CLAHE* and *Noise cleaning*.
+* Checkboxes for *Invert*, *CLAHE*, *Noise cleaning* and *Crop to board*.
 * A *Preview* button that shows the first page before/after processing.
 * A *Run* button that processes the entire document and displays a progress bar.
 
@@ -46,7 +46,7 @@ class SmartboardGUI:
     def __init__(self, master: Tk):
         self.master = master
         master.title("Smartboard PDF Inverter")
-        master.geometry("660x560")
+        master.geometry("660x630")
         self.create_widgets()
         # Thread-safe event queue: worker threads must never touch Tk
         # widgets directly (tkinter is not thread-safe); they enqueue
@@ -102,6 +102,8 @@ class SmartboardGUI:
         Checkbutton(opts_frame, text="Apply CLAHE (legacy)", variable=self.clahe_var).grid(row=2, column=0, columnspan=2, sticky="w")
         self.clean_var = IntVar(value=0)
         Checkbutton(opts_frame, text="Noise cleaning (legacy)", variable=self.clean_var).grid(row=3, column=0, columnspan=2, sticky="w")
+        self.crop_var = IntVar(value=0)
+        Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=4, column=0, columnspan=2, sticky="w")
 
         # ---------- Preview ----------
         preview_frame = Frame(self.master)
@@ -229,6 +231,7 @@ class SmartboardGUI:
             "invert": bool(self.invert_var.get()),
             "clahe": bool(self.clahe_var.get()),
             "clean": bool(self.clean_var.get()),
+            "crop": bool(self.crop_var.get()),
         }
         # Disable controls while processing.
         self._set_controls_state("disabled")
@@ -270,6 +273,7 @@ class SmartboardGUI:
                 invert=options["invert"],
                 apply_clahe=options["clahe"],
                 clean=options["clean"],
+                crop=options["crop"],
                 progress=on_progress,
             )
             self._events.put(

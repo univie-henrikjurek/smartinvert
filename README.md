@@ -51,7 +51,10 @@ untouched.*
    (`255 − v`), plus optional (legacy) CLAHE contrast enhancement and
    morphological cleaning.
 3. **Page-faithful output** — the page is reproduced with its original size and
-   one of the three strategies above.
+   one of the three strategies above. Optionally (`--crop` or the GUI
+   checkbox, ADR 0003) the finished document is re-wrapped afterwards so every
+   page with a detected board is sized to exactly that rectangle; pages
+   without a board keep their full size.
 4. **Verification & debug** — the output page is re-rendered at the same DPI
    and compared with the input (max/mean diff outside and inside the region);
    `--debug` writes per-page composites
@@ -114,6 +117,9 @@ Usage: smartinvert -i INPUT [-o OUTPUT] [options]
       --clean / --no-clean
                          Morphological cleaning inside the region
                          (legacy, default: off)
+      --crop / --no-crop Size each output page to its detected board
+                         rectangle; pages without a board keep their full
+                         size (default: off – page-faithful output)
       --debug            Write per-page debug composites to <output>/debug/
       --config PATH      Optional JSON config file; CLI flags take precedence
   -v / -vv               Log level INFO / DEBUG
@@ -122,6 +128,12 @@ Usage: smartinvert -i INPUT [-o OUTPUT] [options]
 
 Exit code: `0` on success, `1` if at least one file failed (a batch continues
 past failing files). Run `smartinvert --help` for the full reference.
+
+## Config file
+
+`--config PATH` loads a JSON file holding any of the options `input`,
+`output`, `dpi`, `invert`, `clahe`, `clean`, `crop` (bool, default off) and
+`debug`; explicit CLI flags take precedence over config values.
 
 ## GUI
 
@@ -139,6 +151,8 @@ start.bat         # Windows
   `<name>_inverted.pdf` next to the input (folder input requires an output
   folder)
 - **DPI** slider (default 150; raise to 300 for sharper results)
+- **Crop to board** checkbox — sizes each page with a detected board to
+  exactly that rectangle, removing the surrounding page margin (default: off)
 - **Preview first page** — original and processed page side by side
 - **Run** — processes with a progress bar and reports the output location
 

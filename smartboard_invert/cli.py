@@ -40,6 +40,7 @@ REAL_DEFAULTS: Dict[str, Any] = {
     "invert": True,
     "clahe": False,
     "clean": False,
+    "crop": False,
     "debug": False,
 }
 
@@ -115,6 +116,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable morphological cleaning.",
     )
     parser.add_argument(
+        "--crop",
+        action="store_true",
+        default=None,
+        help=(
+            "Size each output page to its detected board rectangle (removes the "
+            "surrounding page margin). Pages without a detected board are kept "
+            "in full size. Default: off (page-faithful output)."
+        ),
+    )
+    parser.add_argument(
+        "--no-crop",
+        dest="crop",
+        action="store_false",
+        help="Keep the full page size (default).",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         default=None,
@@ -149,6 +166,7 @@ _CONFIG_TYPES: Dict[str, Any] = {
     "invert": bool,
     "clahe": bool,
     "clean": bool,
+    "crop": bool,
     "debug": bool,
 }
 
@@ -181,7 +199,7 @@ def resolve_options(args: argparse.Namespace, config: dict) -> dict:
     from an explicit one.
     """
     resolved: Dict[str, Any] = {}
-    for name in ("input", "output", "dpi", "invert", "clahe", "clean", "debug"):
+    for name in ("input", "output", "dpi", "invert", "clahe", "clean", "crop", "debug"):
         value = getattr(args, name)
         if value is None:
             value = config.get(name, REAL_DEFAULTS[name])
@@ -276,6 +294,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 invert=bool(opts["invert"]),
                 apply_clahe=bool(opts["clahe"]),
                 clean=bool(opts["clean"]),
+                crop=bool(opts["crop"]),
                 debug_dir=debug_dir,
             )
             logger.info("Done: %s", result.summary())
