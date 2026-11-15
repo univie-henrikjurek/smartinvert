@@ -46,7 +46,7 @@ REAL_DEFAULTS: Dict[str, Any] = {
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="smartboard-invert",
+        prog="smartinvert",
         description=(
             "Detect the smartboard rectangle on every PDF page and invert only "
             "that area (255 - v). Page size and position are preserved; "

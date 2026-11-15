@@ -80,7 +80,7 @@ smartboard-invert --input board.pdf --output board_fixed.pdf \
 | **A‑3** | The GUI will be **single‑window**; no multi‑document tabs. | Keeps complexity low for the MVP.
 | **A‑4** | Processing is **page‑by‑page**, no parallelism. | Lower memory footprint; parallelism can be added if needed.
 | **A‑5** | The default DPI of **150** provides a good trade‑off between quality and speed. | Commonly used for scanned documents.
-| **A‑6** | The program will be distributed as a **wheel** and an entry‑point script `smartboard-invert`. | Eases installation via `pip`.
+| **A‑6** | The program will be distributed as a **wheel** and an entry‑point script (renamed `smartinvert` in v0.3.0, was `smartboard-invert`). | Eases installation via `pip`.
 | **A‑7** | No OCR or text extraction is required. | Out of scope for the inversion focus. |
 
 ### 8. Acceptance Criteria

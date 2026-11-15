@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smartboard-invert"
-version = "0.2.0"
+version = "0.3.0"  # keep in sync with __version__ in smartboard_invert/__init__.py
 description = "Selective smartboard inversion for PDFs (auto rectangle detection, CLI + simple GUI)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,15 +12,35 @@ license = {text = "MIT"}
 authors = [
     {name = "Henrik Jurek", email = "243551298+univie-henrikjurek@users.noreply.github.com"},
 ]
+keywords = ["pdf", "smartboard", "whiteboard", "inversion", "document-processing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: X11 Applications :: Tk",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Utilities",
+]
 dependencies = [
     "PyMuPDF>=1.23.0",
-    "opencv-python>=4.8.0",
+    # headless variant: the tool only uses cv2 for encoding/morphology (no
+    # highgui/imshow); the GUI is Tkinter.  Headless avoids system GUI
+    # libraries (e.g. libGL on Linux) and ships a smaller wheel.
+    "opencv-python-headless>=4.8.0",
     "numpy>=1.24.0",
     "Pillow>=9.0.0",
 ]
 
 [project.scripts]
-smartboard-invert = "smartboard_invert.cli:main"
+smartinvert = "smartboard_invert.cli:main"
 
 [tool.coverage.run]
 # GUI is headless-only (needs a display) and __main__ is a thin entry-point
