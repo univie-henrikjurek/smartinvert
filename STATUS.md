@@ -27,8 +27,11 @@ gate 80 %), real run on `inputs/test.pdf` verified (see "Final Verification").
   on Linux) – full suite re-verified green
 - `LICENSE` (MIT) added; `classifiers`/`keywords` in pyproject
 - GUI: folder input (batch) + optional output field
-- CI: Python 3.9 + 3.13 matrix, installs as real (non-editable) package,
-  smoke test on `inputs/test.pdf`; `--break-system-packages` removed
+- CI: Python 3.10 + 3.13 matrix (3.9 dropped: EOL + not in runner images),
+  installs as real (non-editable) package, installs pytest/pytest-cov,
+  smoke test on `inputs/test.pdf`; `--break-system-packages` removed.
+  First green run: actions/runs/43715427722 (both jobs ✓)
+- Minimum supported Python: **3.10** (was 3.9, EOL since 2025-10)
 - Repo: https://github.com/univie-henrikjurek/smartinvert (private), tag
   v0.3.0; packaging verified in a scratch venv (`pip install .` →
   `smartinvert` runs the sample)
@@ -149,7 +152,11 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
 - Legacy default output name `<stem>_inverted.pdf` kept for single-file runs
   without `--output` (backward compatibility).
 - CI workflow (`.github/workflows/ci.yml`, coverage gate 80 %) runs on the
-  GitHub remote (private repo `univie-henrikjurek/smartinvert`).
+  GitHub remote (private repo `univie-henrikjurek/smartinvert`); current
+  status green.
+- Non-fatal CI annotations: Node.js 20 deprecation warnings for
+  `actions/checkout@v4` / `actions/setup-python@v5` (update action versions
+  when the newer majors are stable).
 - GUI needs Tkinter (on Debian/Ubuntu: `sudo apt install python3-tk`); not
   available in the headless dev container, so the GUI was verified by
   syntax/compile checks only (logic follows the existing thread-safe pattern).
