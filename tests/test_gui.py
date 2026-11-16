@@ -32,10 +32,10 @@ def tk_root():
 
 
 class TestCropCheckbox:
-    def test_crop_var_exists_and_defaults_off(self, tk_root):
+    def test_crop_var_exists_and_defaults_on(self, tk_root):
         app = gui.SmartboardGUI(tk_root)
         assert hasattr(app, "crop_var")
-        assert app.crop_var.get() == 0  # default: crop disabled
+        assert app.crop_var.get() == 1  # ADR 0006: crop is the default
 
     def _start_with_crop(self, app, monkeypatch, crop_value):
         """Start a run with a stubbed process_pdf; return (args, kwargs) of
@@ -68,10 +68,12 @@ class TestCropCheckbox:
         _args, kwargs = self._start_with_crop(app, monkeypatch, 1)
         assert kwargs["crop"] is True
 
-    def test_crop_default_reaches_process_pdf_as_false(self, tk_root, monkeypatch):
+    def test_crop_default_reaches_process_pdf_as_true(self, tk_root, monkeypatch):
+        """ADR 0006: the (on-by-default) checkbox must reach process_pdf as
+        crop=True."""
         app = gui.SmartboardGUI(tk_root)
         _args, kwargs = self._start_with_crop(app, monkeypatch, app.crop_var.get())
-        assert kwargs["crop"] is False
+        assert kwargs["crop"] is True
 
 
 class TestSimplifiedOptions:

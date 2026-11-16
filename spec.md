@@ -207,3 +207,28 @@ entfernt, die GUI wird auf die relevanten Optionen reduziert. Grundlage:
 *Phase 4 addendum:* 2026‑11‑16, **Supervisor**
 
 ---
+
+## Phase 5 (2026‑11‑16): Crop als Default (v0.7.1)
+
+Phase 5 macht das Zuschneiden auf das Board-Rechteck (ADR 0003) zum
+Standardverhalten: die Seitengrenzen sollen per Default **nur den
+sichtbaren Bereich** enthalten (User-Feedback 2026‑11‑16). Grundlage:
+[ADR 0006](docs/adr/0006-crop-als-default.md).
+
+### 5.1 Geänderte Anforderungen (ersetzen P2‑FR‑8/ADR 0003 D4 teilweise)
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P5‑FR‑1** | Crop default AN (v0.7.1) | `process_pdf(crop=True)`, CLI-Default `crop=True` (`--no-crop` deaktiviert), GUI-Checkbox „Auf Board zuschneiden (Rand entfernen)" default angehakt. Seitenverhalten unverändert (ADR 0003): nur Seiten mit erkanntem Board werden zugeschnitten (exakt auf das Rechteck), Seiten ohne Board (inkl. rotierter Seiten, A‑11) behalten die volle Größe. Ältere CLI-User, die seitengetreue Ausgabe wollen: `--no-crop` (Breaking Change in 0.x, dokumentiert). |
+
+### 5.2 Abweichungen (dokumentiert)
+
+| # | Abweichung | Begründung |
+|---|------------|------------|
+| **P5‑D‑1** | Seitengetreue Ausgabe (Original-Seitengröße inkl. Seitenrand um das Board) ist jetzt **opt-in** (`--no-crop` / Checkbox abhaken); der Standard-Run liefert zugechnittene Seiten. | User-Anforderung (2026‑11‑16): „die Grenzen des Dokuments [sollten] nur den sichtbaren Bereich beinhalten" — im Standard-Run deckten sich Seitengrenzen (A4) nicht mit dem sichtbaren Board. Crop liefert exakt dieses Verhalten (seit v0.5.0 verifiziert: Seite = Inhalt, < 0,5 pt Abweichung). Die Suite pinnt in den page-faithful-Tests `crop=False` explizit; der Pipeline-Test-Helfer `process()` defaultet auf `crop=False` (Test-Kontrakt, nicht Produkt-Default). |
+
+---
+
+*Phase 5 addendum:* 2026‑11‑16, **Supervisor**
+
+---

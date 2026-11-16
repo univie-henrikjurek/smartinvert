@@ -114,7 +114,9 @@ class SmartboardGUI:
         # checkboxes removed – the hex field is the colour fine control)
         self.invert_var = IntVar(value=1)
         Checkbutton(opts_frame, text="Invert colours", variable=self.invert_var).grid(row=1, column=0, columnspan=2, sticky="w")
-        self.crop_var = IntVar(value=0)
+        # crop is ON by default (ADR 0006, v0.7.1): the page should contain
+        # only the visible board area
+        self.crop_var = IntVar(value=1)
         Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=2, column=0, columnspan=2, sticky="w")
         # Target background (v0.5.0)
         Label(opts_frame, text="Zielhintergrund:").grid(row=3, column=0, sticky="w")

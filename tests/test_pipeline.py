@@ -29,11 +29,17 @@ import synth
 from synth import A4_W, A4_H, DPI, board_image, changed_bbox, make_pdf, outside_mask, PX_PER_PT
 
 
-def process(tmp_path, pages, **kwargs):
+def process(tmp_path, pages, crop=False, **kwargs):
+    """Run ``process_pdf`` on a synthetic document.
+
+    ``crop=False`` is pinned as the test-suite default (ADR 0006 made crop
+    the production default, but most of the suite validates the
+    page-faithful behaviour); crop tests pass ``crop=True`` explicitly.
+    """
     src = tmp_path / "in.pdf"
     truths = make_pdf(src, pages)
     dst = tmp_path / "out.pdf"
-    result = process_pdf(src, dst, dpi=DPI, **kwargs)
+    result = process_pdf(src, dst, dpi=DPI, crop=crop, **kwargs)
     return src, dst, truths, result
 
 
@@ -368,7 +374,7 @@ def test_rotated_image_placement_uses_fallback(tmp_path):
     doc.save(str(src))
     doc.close()
 
-    result = process_pdf(src, tmp_path / "out.pdf", dpi=DPI)
+    result = process_pdf(src, tmp_path / "out.pdf", dpi=DPI, crop=False)
     page_res = result.pages[0]
     assert page_res.detected
     assert page_res.method == "rerasterize"
@@ -474,7 +480,7 @@ def test_image_replace_failure_falls_back_to_rerasterize(tmp_path, monkeypatch):
     src = tmp_path / "in.pdf"
     truths = make_pdf(src, pages)
     monkeypatch.setattr(pipeline, "_try_image_replace", lambda *a, **k: False)
-    result = process_pdf(src, tmp_path / "out.pdf", dpi=DPI)
+    result = process_pdf(src, tmp_path / "out.pdf", dpi=DPI, crop=False)
     page_res = result.pages[0]
     assert page_res.detected
     assert page_res.method == "rerasterize"
@@ -796,11 +802,10 @@ class TestCropNoBoard:
 
 
 class TestCropRegression:
-    def test_default_run_and_explicit_no_crop_are_identical(self, tmp_path):
-        """crop=False (the default) must stay the unchanged page-faithful
-        path (ADR 0003, D5): rendered pages pixel-identical to an explicit
-        crop=False run.  (The remaining regression check – all pre-existing
-        tests – is the full suite run.)"""
+    def test_default_run_matches_explicit_crop(self, tmp_path):
+        """ADR 0006: crop is the production default – the default run must be
+        pixel-identical to an explicit crop=True run, and an explicit
+        crop=False run must keep the page-faithful sizes (ADR 0003, D5)."""
         pages = [
             {"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)},
             {"kind": "vector", "rect": (300, 100, 200, 500), "bg": (40, 40, 45)},
@@ -808,14 +813,23 @@ class TestCropRegression:
         ]
         src = tmp_path / "in.pdf"
         make_pdf(src, pages)
-        process_pdf(src, tmp_path / "default.pdf", dpi=DPI)  # crop default
-        process_pdf(src, tmp_path / "nocrop.pdf", dpi=DPI, crop=False)
-        a = pdf_to_images(tmp_path / "default.pdf", dpi=DPI)
-        b = pdf_to_images(tmp_path / "nocrop.pdf", dpi=DPI)
-        assert len(a) == len(b) == 3
+        process_pdf(src, tmp_path / "default.pdf", dpi=DPI)  # crop default (on)
+        process_pdf(src, tmp_path / "crop.pdf", dpi=DPI, crop=True)
+        process_pdf(src, tmp_path / "faithful.pdf", dpi=DPI, crop=False)
+        d = pdf_to_images(tmp_path / "default.pdf", dpi=DPI)
+        c = pdf_to_images(tmp_path / "crop.pdf", dpi=DPI)
+        a, f = renders(src, tmp_path / "faithful.pdf")
+        assert len(d) == len(c) == len(f) == 3
+        # default run == explicit crop run, pixel-identical
         for i in range(3):
-            assert a[i].shape == b[i].shape
-            assert cv2.absdiff(a[i], b[i]).max() == 0
+            assert d[i].shape == c[i].shape
+            assert cv2.absdiff(d[i], c[i]).max() == 0
+        # board pages: crop shrinks the page, faithful run keeps the input size
+        assert f[0].shape == a[0].shape
+        assert d[0].shape[:2] != f[0].shape[:2]
+        # no-board page: identical across all runs
+        assert d[2].shape == f[2].shape
+        assert cv2.absdiff(d[2], f[2]).max() == 0
 
 
 class TestCropDefensiveRotationMath:
@@ -1032,7 +1046,9 @@ def test_phase3_bit_exact_v041_regression(tmp_path):
     # determinism: a second run with the v0.4.1 parameters renders
     # pixel-identical pages
     dst2 = tmp_path / "out2.pdf"
-    process_pdf(src, dst2, dpi=DPI, bg_target=None, keep_colors=frozenset())
+    process_pdf(
+        src, dst2, dpi=DPI, crop=False, bg_target=None, keep_colors=frozenset()
+    )
     assert np.array_equal(pdf_to_images(dst, dpi=DPI)[0], pdf_to_images(dst2, dpi=DPI)[0])
 
 

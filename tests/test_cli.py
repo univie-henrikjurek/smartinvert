@@ -301,8 +301,8 @@ class TestCliInProcess:
 
 
 class TestCropCli:
-    """--crop / --no-crop / config 'crop' (ADR 0003, D4): default off, CLI
-    flags take precedence over the config file."""
+    """--crop / --no-crop / config 'crop' (ADR 0003, D4; ADR 0006): default
+    on since v0.7.1, CLI flags take precedence over the config file."""
 
     BOARD = (150, 150, 300, 550)  # x, y, w, h in pt
 
@@ -361,10 +361,21 @@ class TestCropCli:
         assert rect.width == pytest.approx(self.BOARD[2], abs=0.5)
         assert rect.height == pytest.approx(self.BOARD[3], abs=0.5)
 
-    def test_resolve_options_default_crop_false(self):
+    def test_default_run_crops_to_board_rect(self, tmp_path):
+        """ADR 0006: without any crop flag the default run crops to the
+        board rect."""
+        src = self._board_pdf(tmp_path)
+        outd = tmp_path / "out"
+        result = run_cli("--input", str(src), "--output", str(outd))
+        assert result.returncode == 0, result.stderr + result.stdout
+        rect = self._first_page_rect(outd / "board.pdf")
+        assert rect.width == pytest.approx(self.BOARD[2], abs=0.5)
+        assert rect.height == pytest.approx(self.BOARD[3], abs=0.5)
+
+    def test_resolve_options_default_crop_true(self):
         args = cli.build_parser().parse_args([])
         opts = cli.resolve_options(args, {})
-        assert opts["crop"] is False
+        assert opts["crop"] is True
 
 class TestPhase3Parsers:
     """Phase 3 (P3-D-2 / ADR 0002 D3): the central parsers for
