@@ -187,6 +187,42 @@ Namens-Farben `--keep-colors` von der Inversion ausgenommen werden.
   Coder/Tester/Reviewer-Schritte direkt ausgeführt; Workflow (ADR →
   Implementierung → Tests → Review → PR/CI/Tag) unverändert.
 
+**v0.7.0 – Optionen vereinfachen (2026-11-16, tag v0.7.0).** User-Feedback
+nach v0.6.0: (1) „Noise cleaning (legacy)" lässt Inhalte verschwinden,
+(2) „Rot/Grün erhalten" ist durch das Hex-Feld redundant, (3) „Apply CLAHE"
+ist unverständlich. ADR 0005 (accepted):
+
+- **D1 (breaking):** CLAHE + morphologisches Cleaning komplett entfernt —
+  GUI, CLI (`--clahe/--no-clahe`, `--clean/--no-clean`), JSON-Config
+  (`clahe`/`clean`), Backend (`processing._process_region` weg;
+  `apply_clahe`/`clean`-Parameter aus `process_pdf`,
+  `enhance_image[_ex]` und dem gesamten Pipeline-Plumbing entfernt;
+  `do_something` reduziert auf `invert`). Begründung: Cleaning frisst
+  dünne Striche/Text (User-Beobachtung), CLAHE ist für Farbinhalte
+  destruktiv (Graustufen-Rundgang); beide waren seit v0.3.0 „legacy",
+  default AUS. Ältere Configs mit diesen Keys laufen weiter (unbekannte
+  Keys = Debug-Log, kein Fehler). `--clahe` am CLI → sauberes
+  argparse-Error (exit 2).
+- **D2:** GUI reduziert auf: DPI, „Invert colours", „Auf Board
+  zuschneiden", „Zielhintergrund", „Zusätzliche Hex-Farben". Die
+  Checkboxen „Apply CLAHE (legacy)", „Noise cleaning (legacy)", „Rot
+  erhalten", „Grün erhalten" sind weg. `keep_colors` wird von der GUI
+  **fix** als `{red, green}` übergeben (= bisheriger Default, keine
+  Verhaltensänderung; `gui.GUI_KEEP_COLORS`); Hilfstext des Hex-Felds:
+  „rot/grün bleiben immer erhalten". Fenster 660×830 → 660×700.
+- Tests: 1 CLAHE-Test durch `test_invert_false_returns_unchanged` ersetzt
+  (invert aus = bit-identisch), 2 Pipeline-Tests angepasst, 3 neue
+  GUI-Tests (`TestSimplifiedOptions`: entfernte Widgets existieren nicht,
+  verbleibende existieren, `keep_colors` erreicht `process_pdf` als
+  `{red, green}`). **268 passed + 1 skipped** (headless), **13 GUI** unter
+  Xvfb, Coverage **91.55 %** (Gate 80 %), GUI-E2E (Xvfb) ALL OK, CLI-Smoke
+  (`--help` ohne clahe/clean, Real-Run mit `--keep-hex` +
+  `--bg-target 255,255,255`, alte Config-Kompatibilität) ok.
+- Doku: README (How-it-works, CLI-Block, GUI-Sektion, Config-Kompatibilität,
+  Project layout), spec.md Phase-4-Addendum (P4-FR-1, P4-D-1).
+- Branch `feature/simplify-options` → PR #4 → CI grün (3.9 + 3.13) →
+  Rebase-Merge nach master.
+
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
   (zero prerequisites, ~150–200 MB) for releases — ultimate comfort for
@@ -322,5 +358,6 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
 ## Next Step
-None – **v0.6.0 released** (`--keep-hex` merged to master, tag `v0.6.0`,
-PR #3 closed). Distribution via the usual ZIP/clone + `start.sh`/`start.bat`.
+None – **v0.7.0 released** (Optionen vereinfacht: CLAHE/Noise-Cleaning raus,
+GUI reduziert; PR #4 merged, tag `v0.7.0`). Distribution via the usual
+ZIP/clone + `start.sh`/`start.bat`. Offen: Nutzer-Windows-Test der v0.7.0-ZIP.
