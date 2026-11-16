@@ -42,7 +42,7 @@ REAL_DEFAULTS: Dict[str, Any] = {
     "output": None,
     "dpi": 150,
     "invert": True,
-    "crop": False,
+    "crop": True,  # ADR 0006: crop is the default (v0.7.1)
     "debug": False,
     "bg_target": "complement",
     "keep_colors": "red,green",
@@ -103,14 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Size each output page to its detected board rectangle (removes the "
             "surrounding page margin). Pages without a detected board are kept "
-            "in full size. Default: off (page-faithful output)."
+            "in full size. Default: on (since v0.7.1)."
         ),
     )
     parser.add_argument(
         "--no-crop",
         dest="crop",
         action="store_false",
-        help="Keep the full page size (default).",
+        help="Keep the full page size (disable the default crop).",
     )
     parser.add_argument(
         "--bg-target",

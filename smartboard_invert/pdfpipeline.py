@@ -9,9 +9,10 @@ board image) and writes a new PDF in which:
 * the detected smartboard rectangle is inverted strictly inside its original
   position (never moved, never cropped).
 
-With ``crop=True`` a final post-stage re-wraps the document so every page
-with a detected board is sized to exactly that rectangle (ADR 0003); pages
-without a board keep their full size.
+A final post-stage (on by default, ADR 0006; ``crop=False`` disables it)
+re-wraps the document so every page with a detected board is sized to
+exactly that rectangle (ADR 0003); pages without a board keep their full
+size.
 
 Three output methods exist per page (see ADR 0001, D2):
 
@@ -93,7 +94,7 @@ def process_pdf(
     output_path: "str | Path",
     dpi: int = 150,
     invert: bool = True,
-    crop: bool = False,
+    crop: bool = True,
     debug_dir: Optional["str | Path"] = None,
     progress: Optional[ProgressCallback] = None,
     *,
@@ -116,10 +117,11 @@ def process_pdf(
         Apply the in-region transformation (strict ``255 − v`` inversion
         or target-background remap, default: on).
     crop:
-        When True, the final output is re-wrapped so every page with a
-        detected board is sized to exactly that rectangle; pages without a
-        board (incl. all rotated pages, A-11) keep their full size.
-        Default False (page-faithful, unchanged).
+        When True (the default, ADR 0006), the final output is re-wrapped
+        so every page with a detected board is sized to exactly that
+        rectangle; pages without a board (incl. all rotated pages, A-11)
+        keep their full size.  Pass ``crop=False`` for the unchanged
+        page-faithful output.
     debug_dir:
         Optional directory for per-page debug composites
         (original | original+bbox | result).

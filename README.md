@@ -53,11 +53,13 @@ untouched.*
    Marker colours can be preserved and left un-inverted
    (`--keep-colors`; default `red,green`, since v0.5.0), and explicit hex
    colours / ranges can be excluded as well (`--keep-hex`, since v0.6.0).
-3. **Page-faithful output** — the page is reproduced with its original size and
-   one of the three strategies above. Optionally (`--crop` or the GUI
-   checkbox, ADR 0003) the finished document is re-wrapped afterwards so every
-   page with a detected board is sized to exactly that rectangle; pages
-   without a board keep their full size.
+3. **Output** — one of the three strategies above is applied. Since v0.7.1
+   (ADR 0006) the finished document is afterwards re-wrapped **by default**
+   (ADR 0003) so every page with a detected board is sized to exactly that
+   rectangle — the page boundaries contain only the visible board area
+   (GUI checkbox „Auf Board zuschneiden (Rand entfernen)", enabled by
+   default; `--no-crop` / unchecking it keeps the unchanged page-faithful
+   output). Pages without a board keep their full size.
 4. **Verification & debug** — the output page is re-rendered at the same DPI
    and compared with the input (max/mean diff outside and inside the region);
    `--debug` writes per-page composites
@@ -116,7 +118,8 @@ Usage: smartinvert -i INPUT [-o OUTPUT] [options]
                            Invert the detected region (default: enabled)
        --crop / --no-crop  Size each output page to its detected board
                           rectangle; pages without a board keep their full
-                          size (default: off – page-faithful output)
+                          size (default: on since v0.7.1; --no-crop keeps
+                          the page-faithful output)
       --bg-target SPEC    Target background of the board: 'complement'
                           (strict 255 − v) or 'R,G,B' (each 0–255), e.g.
                           '255,255,255' = pure white
@@ -178,7 +181,8 @@ start.bat         # Windows
 - **DPI** slider (default 150; raise to 300 for sharper results)
 - **Auf Board zuschneiden (Rand entfernen)** — sizes each page with a
   detected board to exactly that rectangle, removing the surrounding page
-  margin (default: off)
+  margin (default: on since v0.7.1 — the page then contains only the
+  visible board area)
 - **Zielhintergrund** — target background of the board: *Complement (255 − v)*
   (default) or *Reinweiß (255,255,255)*
 - The red/green marker colours are always kept un-inverted (the former
