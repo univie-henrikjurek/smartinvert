@@ -197,7 +197,7 @@ def process_pdf(
             if progress is not None:
                 progress(pno + 1, total)
         if crop:
-            _save_cropped(out_doc, output_path, result)
+            _save_cropped(out_doc, output_path, result, dpi)
         else:
             out_doc.save(str(output_path), garbage=3, deflate=True)
     finally:
@@ -644,18 +644,36 @@ def _try_image_replace(
 # ---------------------------------------------------------------------------
 
 
-def _save_cropped(faithful_doc, output_path: Path, result: ProcessResult) -> None:
+def _save_cropped(
+    faithful_doc, output_path: Path, result: ProcessResult, dpi: int
+) -> None:
     """Re-wrap the page-faithful output so each page shows only its board rect.
 
-    Post-stage for ``crop=True`` (ADR 0003): pages with a detected board
-    rectangle become new pages of exactly that size (``show_pdf_page`` with
-    ``clip`` – vector-exact, 1:1 mapping because target rect and clip have
-    identical dimensions).  Pages without a board (including all rotated
-    pages, A-11) are copied 1:1 via ``insert_pdf`` (no content loss,
-    ``/Rotate`` preserved).  When no page has a board the result is the
-    unchanged page-faithful document (never an empty file).
+    Post-stage for ``crop=True`` (ADR 0003; ADR 0007, D1): pages with a
+    detected board rectangle become new pages of exactly that size.  The
+    board content is sliced from a render of the faithful page at the
+    processing DPI — using ``pr.rect_px``, the very same rectangle the
+    transformation and verification operated on.  No pixel→page coordinate
+    mapping is involved at all, which is what made the former
+    ``show_pdf_page(clip=…)`` approach produce mis-clipped pages on
+    documents whose MediaBox/CropBox does not start at (0,0) (PyMuPDF
+    reports/normalises page rectangles inconsistently across
+    ``page.rect`` / ``get_image_info`` / ``show_pdf_page`` in v2.x).
 
-    ``faithful_doc`` is serialized and reopened because ``show_pdf_page``
+    Quality note (ADR 0007, D1): board pages contain only raster content
+    inside the board rectangle after the transformation (image-replace =
+    raster XObject; rerasterize = raster page), so slicing the render loses
+    nothing for the board area.  Foreign vector content *inside* the board
+    rectangle (rare; e.g. annotations over a scanned board) is rasterised
+    at the processing DPI instead of staying vector-exact — use
+    ``--dpi 300`` for sharper output.
+
+    Pages without a board (including all rotated pages, A-11) are copied
+    1:1 via ``insert_pdf`` (no content loss, ``/Rotate`` preserved).  When
+    no page has a board the result is the unchanged page-faithful document
+    (never an empty file).
+
+    ``faithful_doc`` is serialized and reopened because ``insert_pdf``
     requires a *different* document object as source.
     """
     src = fitz.open(stream=faithful_doc.write(), filetype="pdf")
@@ -663,38 +681,28 @@ def _save_cropped(faithful_doc, output_path: Path, result: ProcessResult) -> Non
     try:
         for i, pr in enumerate(result.pages):
             page = src.load_page(i)
-            if pr.detected and pr.rect_pt is not None:
-                if page.rotation:
-                    # Defensive path – by contract (A-11) rect_pt only exists
-                    # on unrotated pages, where visual == unrotated.  If a
-                    # rotated page ever carries a rect (visual coordinates),
-                    # bake the rotation into the throwaway copy first
-                    # (officially recommended before show_pdf_page); the old
-                    # visual coordinates are then unrotated coordinates.
-                    try:
-                        page.remove_rotation()
-                    except Exception as e:
-                        logger.warning(
-                            "Page %d: remove_rotation failed (%s) – page "
-                            "copied in full", i + 1, e,
-                        )
-                        final.insert_pdf(src, from_page=i, to_page=i)
-                        continue
-                # ``clip`` is unrotated-space (ADR 0003, D2); for rotation 0
-                # (the only case with rects) rect_pt is already in that space.
-                clip = fitz.Rect(*pr.rect_pt) & page.rect
-                if clip.width > 0 and clip.height > 0:
-                    new_page = final.new_page(width=clip.width, height=clip.height)
-                    new_page.show_pdf_page(new_page.rect, src, i, clip=clip)
+            if (
+                pr.detected
+                and pr.rect_pt is not None
+                and pr.rect_px is not None
+                and not page.rotation
+            ):
+                w_pt = pr.rect_pt[2] - pr.rect_pt[0]
+                h_pt = pr.rect_pt[3] - pr.rect_pt[1]
+                if w_pt > 0 and h_pt > 0:
+                    x0, y0, x1, y1 = pr.rect_px
+                    sliced = _render_page(page, dpi)[y0:y1, x0:x1]
+                    new_page = final.new_page(width=w_pt, height=h_pt)
+                    _embed_full_page_image(new_page, new_page.rect, sliced)
                     pr.cropped = True
                     logger.info(
                         "Page %d: cropped to board rect (%.1f x %.1f pt)",
-                        i + 1, clip.width, clip.height,
+                        i + 1, w_pt, h_pt,
                     )
                     continue
                 logger.warning(
-                    "Page %d: degenerate crop rect %s – page copied in full",
-                    i + 1, clip,
+                    "Page %d: degenerate crop rect (rect_pt=%s) – page "
+                    "copied in full", i + 1, pr.rect_pt,
                 )
             else:
                 logger.warning(

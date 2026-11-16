@@ -249,6 +249,45 @@ beinhalten. ADR 0006 (accepted):
   `--no-crop` → 595 × 842 pt (A4).
 - Branch `feature/crop-default-on` → PR #5 → CI grün → Rebase-Merge.
 
+**v0.7.2 – Crop-Robustheit + GUI-Ordner-Batch + Fehlerdialoge
+(2026-11-16, tag v0.7.2).** Zwei User-Bugreports zu v0.7.1:
+
+1. **Crop auf echten Dokumenten kaputt** („pixeldünner Rahmen, viel Weiß,
+   Streifen in der Mitte"): Ursache = Seiten mit **versetztem
+   MediaBox/CropBox** (Ursprung ≠ (0,0); typisch für Handy-/App-Exporte).
+   `rect_pt = rect_px × scale` fehlte der Seitenursprung-Offset, und
+   PyMuPDF 2.1 interpretiert `page.rect` / `get_image_info` /
+   `show_pdf_page(clip=…)` in inkonsistenten Koordinatenräumen
+   (empirisch: origin-(0,0)-Seite: crop == faithful-Slice, Diff 0;
+   Offset-Seite: Mismatch). **Fix (ADR 0007 D1):** `_save_cropped`
+   rendert die faithful-Seite mit dem Processing-DPI und schneidet exakt
+   `rect_px` aus (dasselbe Rechteck wie Transformation/Verifikation) →
+   1:1-Einbettung in Seite der Größe `rect_pt`. Keine
+   Koordinatenraum-Transformation, version-unabhängig. Trade-off
+   (dokumentiert): Vektor-Content *innerhalb* des Board-Rechtecks wird
+   statt vektor-exakt mit dem Processing-DPI gerastert (Board-Bereich ist
+   nach der Transformation ohnehin Raster).
+2. **GUI-Crash bei Ordner-Input:** Worker gab den Ordner an `process_pdf`
+   (Datei-only) weiter → Fehler; der Fehlerdialog selbst crashte
+   (`lambda: …str(e)` nach dem `except`-Block → `e` ungebunden, PEP 3110 →
+   `NameError`, verdeckte den echten Fehler). **Fix (ADR 0007 D2/D3):**
+   GUI-Ordner-Batch über `cli._plan_jobs` (gleiche Semantik wie CLI:
+   sortierte `*.pdf` → Output-Ordner, Batch läuft bei Einzel-Fehlern
+   weiter, file-level Progress, Summary-Dialog); alle messagebox-Lambdas
+   binden ihre Nachricht eager; Ordner ohne Output-Ordner → Warning im
+   Hauptthread, kein Worker.
+- Tests: +2 Pipeline-Regressionen (Offset-MediaBox- und Offset-CropBox-
+  Seiten: crop-Render == faithful-Slice, Seitengröße == rect; würden mit
+  altem Code fehlschlagen), +3 GUI-Tests (Batch ruft `process_pdf` pro
+  Datei auf, Ordner ohne Output → Warning ohne Worker, Fehler-Dialog
+  zeigt die Nachricht ohne NameError). Bestehende GUI-Tests nutzen jetzt
+  echte Dummy-Dateien (`_plan_jobs` validiert Existenz). **271 passed +
+  1 skipped**, 16 GUI unter Xvfb, Coverage **92,20 %**, GUI-E2E (Xvfb) um
+  Batch-Phasen erweitert: ALL OK. Sample-Regression: Default-Run
+  unverändert 299,4 × 821,4 pt; CLI-Batch ok.
+- Branch `feature/fix-crop-offset-and-gui-errors` → PR #6 → CI grün →
+  Rebase-Merge.
+
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
   (zero prerequisites, ~150–200 MB) for releases — ultimate comfort for
@@ -384,7 +423,8 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
 ## Next Step
-None – **v0.7.1 released** (Crop als Default: Seitengrenzen = sichtbarer
-Board-Bereich; PR #5 merged, tag `v0.7.1`). Distribution via the usual
-ZIP/clone + `start.sh`/`start.bat`. Offen: Nutzer-Windows-Test der
-v0.7.1-ZIP (neuer Default-Output: zugeschnittene Seiten).
+None – **v0.7.2 released** (Crop-Robustheit bei versetzten
+MediaBox/CropBox, GUI-Ordner-Batch, robuste Fehlerdialoge; PR #6 merged,
+tag `v0.7.2`). Distribution via the usual ZIP/clone +
+`start.sh`/`start.bat`. Offen: Nutzer-Windows-Test der v0.7.2-ZIP mit
+dem betroffenen Dokument (Crop-Check) + Ordner-Input in der GUI.
