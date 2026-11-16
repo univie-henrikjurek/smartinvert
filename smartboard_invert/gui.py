@@ -2,7 +2,9 @@
 
 The GUI mirrors the CLI options but presents them in a graphical form:
 
-* File chooser for the input PDF.
+* File chooser for the input PDF (or a folder: all ``*.pdf`` files in it
+  are processed into the chosen output folder, like the CLI batch —
+  ADR 0007, D2).
 * DPI slider (50‑300).
 * Checkboxes for *Invert* and *Crop to board* (ADR 0005: the legacy CLAHE /
   noise-cleaning / red / green checkboxes were removed).
@@ -42,7 +44,7 @@ import cv2
 import numpy as np
 
 from . import processing
-from .cli import parse_keep_hex
+from .cli import _plan_jobs, parse_keep_hex
 from .pdfpipeline import process_pdf
 from .processing import SmartboardError
 
@@ -281,22 +283,15 @@ class SmartboardGUI:
         if not pdf_path:
             messagebox.showwarning("Missing file", "Please select an input PDF or folder first.")
             return
-        in_p = Path(pdf_path)
-        if in_p.is_dir():
-            if not out_field:
-                messagebox.showwarning(
-                    "Missing output",
-                    "For folder input please specify an output folder.",
-                )
-                return
-            out_path = Path(out_field)
-        else:
-            # Empty output field keeps the legacy name next to the input.
-            out_path = (
-                Path(out_field)
-                if out_field
-                else in_p.with_name(in_p.stem + "_inverted.pdf")
+        # Folder input needs an output folder (checked here, main thread,
+        # before any worker starts); the raw fields are handed to the worker,
+        # which plans the jobs with the same helper as the CLI (ADR 0007, D2).
+        if Path(pdf_path).is_dir() and not out_field:
+            messagebox.showwarning(
+                "Missing output",
+                "For folder input please specify an output folder.",
             )
+            return
         # Validate the hex-keep entry first (main thread): on an error the
         # dialog is shown and the run is aborted WITHOUT disabling controls.
         keep_segments = self._parse_keep_hex()
@@ -314,7 +309,9 @@ class SmartboardGUI:
         # Disable controls while processing.
         self._set_controls_state("disabled")
         threading.Thread(
-            target=self._process_worker, args=(pdf_path, out_path, options), daemon=True
+            target=self._process_worker,
+            args=(pdf_path, out_field, options),
+            daemon=True,
         ).start()
 
     def _poll_events(self) -> None:
@@ -336,33 +333,70 @@ class SmartboardGUI:
             pass
         self.master.after(100, self._poll_events)
 
-    def _process_worker(self, pdf_path: str, out_path: Path, options: dict):
+    def _process_worker(self, pdf_path: str, out_field: str, options: dict):
         def on_progress(n, total):
             # Thread-safe: the Tk update runs on the main thread.
             self._events.put(
                 lambda n=n, total=total: self.progress.configure(maximum=total, value=n)
             )
 
+        def dialog(title: str, message: str, error: bool = False):
+            # The message MUST be bound eagerly (default arguments): the
+            # lambda runs later in the main thread, where any `except ... as
+            # e` variable is already unbound (PEP 3110) — ADR 0007, D3.
+            fn = messagebox.showerror if error else messagebox.showinfo
+            self._events.put(lambda t=title, m=message, f=fn: f(t, m))
+
         try:
-            result = process_pdf(
-                pdf_path,
-                out_path,
-                dpi=options["dpi"],
-                invert=options["invert"],
-                crop=options["crop"],
-                bg_target=options.get("bg_target"),
-                keep_colors=options.get("keep_colors", frozenset()),
-                keep_segments=options.get("keep_segments", ()),
-                progress=on_progress,
-            )
-            self._events.put(
-                lambda: messagebox.showinfo("Done", f"Saved to {out_path}\n{result.summary()}")
-            )
-        except SmartboardError as e:
-            self._events.put(lambda: messagebox.showerror("Error", str(e)))
-        except Exception as e:
-            logger.exception("Unexpected error during processing")
-            self._events.put(lambda: messagebox.showerror("Error", f"Unexpected error: {e}"))
+            try:
+                jobs = _plan_jobs(
+                    Path(pdf_path), Path(out_field) if out_field else None
+                )
+            except SmartboardError as e:
+                dialog("Error", str(e), error=True)
+                return
+
+            total = len(jobs)
+            failures: list = []
+            last_result = None
+            for idx, (src, dst) in enumerate(jobs):
+                try:
+                    last_result = process_pdf(
+                        src,
+                        dst,
+                        dpi=options["dpi"],
+                        invert=options["invert"],
+                        crop=options["crop"],
+                        bg_target=options.get("bg_target"),
+                        keep_colors=options.get("keep_colors", frozenset()),
+                        keep_segments=options.get("keep_segments", ()),
+                        # Page-level progress for the single-file case;
+                        # file-level (below) for batches.
+                        progress=on_progress if total == 1 else None,
+                    )
+                except SmartboardError as e:
+                    logger.error("Failed to process %s: %s", src, e)
+                    failures.append(f"{src.name}: {e}")
+                except Exception:  # a bad file must not kill the batch
+                    logger.exception("Unexpected error while processing %s", src)
+                    failures.append(f"{src.name}: unexpected error (see log)")
+                if total > 1:
+                    on_progress(idx + 1, total)
+
+            if failures:
+                detail = "\n".join(failures[:5])
+                more = (
+                    f"\n… and {len(failures) - 5} more" if len(failures) > 5 else ""
+                )
+                dialog(
+                    "Some files failed",
+                    f"{len(failures)} of {total} file(s) failed:\n{detail}{more}",
+                    error=True,
+                )
+            elif total == 1:
+                dialog("Done", f"Saved to {jobs[0][1]}\n{last_result.summary()}")
+            else:
+                dialog("Done", f"Saved {total} file(s) to {jobs[0][1].parent}")
         finally:
             # Re‑enable UI components (executed on the main thread).
             self._events.put(self._reset_ui)

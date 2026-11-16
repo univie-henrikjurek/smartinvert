@@ -832,6 +832,64 @@ class TestCropRegression:
         assert cv2.absdiff(d[2], f[2]).max() == 0
 
 
+class TestCropOffsetPageBox:
+    """ADR 0007, D1: pages whose MediaBox/CropBox does not start at (0,0)
+    (common for phone/app PDF exports) must crop to exactly the same content
+    as the faithful render slice.  The former ``show_pdf_page(clip=…)``
+    approach mis-clipped such pages (user report v0.7.1: thin frame, large
+    white area, a document strip in the middle)."""
+
+    def _offset_pdf(self, tmp_path: Path, offset=(100, 100), use_cropbox=True) -> Path:
+        """A4-sized page whose visible box starts at *offset* instead of
+        (0,0); the board image sits at page coords (150,150)-(450,550)."""
+        import cv2
+
+        src = tmp_path / "in.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=A4_W, height=A4_H)
+        img = synth.board_image(600, 1200, bg=(20, 20, 25), text=True, seed=1)
+        ok, png = cv2.imencode(".png", img)
+        page.insert_image(fitz.Rect(150, 150, 450, 550), stream=png.tobytes())
+        xref = page.xref
+        box = f"[{offset[0]} {offset[1]} {offset[0] + A4_W:.0f} {offset[1] + A4_H:.0f}]"
+        doc.xref_set_key(xref, "MediaBox", box)
+        doc.xref_set_key(xref, "CropBox", box if use_cropbox else "null")
+        doc.save(str(src))
+        doc.close()
+        return src
+
+    @pytest.mark.parametrize(
+        "use_cropbox", [True, False], ids=["offset-cropbox", "offset-mediabox-only"]
+    )
+    def test_cropped_matches_faithful_slice(self, tmp_path, use_cropbox):
+        src = self._offset_pdf(tmp_path, use_cropbox=use_cropbox)
+        res_crop = process_pdf(src, tmp_path / "crop.pdf", dpi=DPI, crop=True)
+        process_pdf(src, tmp_path / "faith.pdf", dpi=DPI, crop=False)
+        pr = res_crop.pages[0]
+        assert pr.detected and pr.cropped
+        crop_imgs = pdf_to_images(tmp_path / "crop.pdf", dpi=DPI)
+        faith_imgs = pdf_to_images(tmp_path / "faith.pdf", dpi=DPI)
+        doc = fitz.open(str(tmp_path / "crop.pdf"))
+        try:
+            out_rect = doc[0].rect
+        finally:
+            doc.close()
+        assert_crop_matches_faithful(
+            crop_imgs[0],
+            faith_imgs[0],
+            pr.rect_px,
+            out_w=out_rect.width,
+            out_h=out_rect.height,
+        )
+        # page size == the board rect, independent of the page origin
+        assert out_rect.width == pytest.approx(
+            pr.rect_pt[2] - pr.rect_pt[0], abs=0.5
+        )
+        assert out_rect.height == pytest.approx(
+            pr.rect_pt[3] - pr.rect_pt[1], abs=0.5
+        )
+
+
 class TestCropDefensiveRotationMath:
     """ADR 0003, D2 (defensive branch): ``rect * page.derotation_matrix`` maps
     a visual-space rect back into the unrotated page space.

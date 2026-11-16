@@ -11,6 +11,7 @@ coverage gate, which excludes gui.py for exactly this reason (pyproject.toml).
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -31,13 +32,32 @@ def tk_root():
     root.destroy()
 
 
+def _dummy_pdf(tmp_path: Path) -> Path:
+    """A file that exists (the stubbed process_pdf never reads its bytes,
+    but the worker's job planning — like the CLI's — requires the input
+    to exist)."""
+    p = tmp_path / "in.pdf"
+    p.write_bytes(b"%PDF-1.4 dummy")
+    return p
+
+
+def _run_start(app) -> None:
+    """Call start_processing and wait for the worker thread to finish."""
+    before = {t for t in threading.enumerate()}
+    app.start_processing()
+    for t in threading.enumerate():
+        if t not in before:
+            t.join(timeout=15)
+            assert not t.is_alive(), "processing worker did not finish"
+
+
 class TestCropCheckbox:
     def test_crop_var_exists_and_defaults_on(self, tk_root):
         app = gui.SmartboardGUI(tk_root)
         assert hasattr(app, "crop_var")
         assert app.crop_var.get() == 1  # ADR 0006: crop is the default
 
-    def _start_with_crop(self, app, monkeypatch, crop_value):
+    def _start_with_crop(self, app, monkeypatch, crop_value, tmp_path):
         """Start a run with a stubbed process_pdf; return (args, kwargs) of
         the recorded call."""
         calls = []
@@ -50,29 +70,24 @@ class TestCropCheckbox:
 
         monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
         app.input_path.delete(0, "end")
-        app.input_path.insert(0, "/nonexistent/in.pdf")
+        app.input_path.insert(0, str(_dummy_pdf(tmp_path)))
         app.output_path.delete(0, "end")
-        app.output_path.insert(0, "/nonexistent/out.pdf")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
         app.crop_var.set(crop_value)
-        before = {t for t in threading.enumerate()}
-        app.start_processing()
-        for t in threading.enumerate():
-            if t not in before:
-                t.join(timeout=15)
-                assert not t.is_alive(), "processing worker did not finish"
+        _run_start(app)
         assert calls, "process_pdf was not called"
         return calls[0]
 
-    def test_crop_checked_reaches_process_pdf(self, tk_root, monkeypatch):
+    def test_crop_checked_reaches_process_pdf(self, tk_root, monkeypatch, tmp_path):
         app = gui.SmartboardGUI(tk_root)
-        _args, kwargs = self._start_with_crop(app, monkeypatch, 1)
+        _args, kwargs = self._start_with_crop(app, monkeypatch, 1, tmp_path)
         assert kwargs["crop"] is True
 
-    def test_crop_default_reaches_process_pdf_as_true(self, tk_root, monkeypatch):
+    def test_crop_default_reaches_process_pdf_as_true(self, tk_root, monkeypatch, tmp_path):
         """ADR 0006: the (on-by-default) checkbox must reach process_pdf as
         crop=True."""
         app = gui.SmartboardGUI(tk_root)
-        _args, kwargs = self._start_with_crop(app, monkeypatch, app.crop_var.get())
+        _args, kwargs = self._start_with_crop(app, monkeypatch, app.crop_var.get(), tmp_path)
         assert kwargs["crop"] is True
 
 
@@ -92,7 +107,7 @@ class TestSimplifiedOptions:
             assert hasattr(app, attr), f"{attr} must still exist"
 
     def test_keep_colors_reaches_process_pdf_as_red_green(
-        self, tk_root, monkeypatch
+        self, tk_root, monkeypatch, tmp_path
     ):
         calls = []
 
@@ -105,15 +120,10 @@ class TestSimplifiedOptions:
         monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
         app = gui.SmartboardGUI(tk_root)
         app.input_path.delete(0, "end")
-        app.input_path.insert(0, "/nonexistent/in.pdf")
+        app.input_path.insert(0, str(_dummy_pdf(tmp_path)))
         app.output_path.delete(0, "end")
-        app.output_path.insert(0, "/nonexistent/out.pdf")
-        before = {t for t in threading.enumerate()}
-        app.start_processing()
-        for t in threading.enumerate():
-            if t not in before:
-                t.join(timeout=15)
-                assert not t.is_alive(), "processing worker did not finish"
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        _run_start(app)
         assert calls, "process_pdf was not called"
         assert calls[0][1]["keep_colors"] == frozenset({"red", "green"})
 
@@ -174,7 +184,7 @@ class TestKeepHexEntry:
             "no worker thread may start when the hex entry is invalid"
         )
 
-    def test_keep_hex_reaches_process_pdf(self, tk_root, monkeypatch):
+    def test_keep_hex_reaches_process_pdf(self, tk_root, monkeypatch, tmp_path):
         calls = []
 
         def fake_process_pdf(*args, **kwargs):
@@ -186,21 +196,16 @@ class TestKeepHexEntry:
         monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
         app = gui.SmartboardGUI(tk_root)
         app.input_path.delete(0, "end")
-        app.input_path.insert(0, "/nonexistent/in.pdf")
+        app.input_path.insert(0, str(_dummy_pdf(tmp_path)))
         app.output_path.delete(0, "end")
-        app.output_path.insert(0, "/nonexistent/out.pdf")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
         app.keep_hex_entry.insert(0, "000001-0000FF")
-        before = {t for t in threading.enumerate()}
-        app.start_processing()
-        for t in threading.enumerate():
-            if t not in before:
-                t.join(timeout=15)
-                assert not t.is_alive(), "processing worker did not finish"
+        _run_start(app)
         assert calls, "process_pdf was not called"
         assert calls[0][1]["keep_segments"] == (((0, 0, 1), (0, 0, 255)),)
 
     def test_empty_entry_reaches_process_pdf_as_empty_tuple(
-        self, tk_root, monkeypatch
+        self, tk_root, monkeypatch, tmp_path
     ):
         calls = []
 
@@ -213,14 +218,88 @@ class TestKeepHexEntry:
         monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
         app = gui.SmartboardGUI(tk_root)
         app.input_path.delete(0, "end")
-        app.input_path.insert(0, "/nonexistent/in.pdf")
+        app.input_path.insert(0, str(_dummy_pdf(tmp_path)))
         app.output_path.delete(0, "end")
-        app.output_path.insert(0, "/nonexistent/out.pdf")
-        before = {t for t in threading.enumerate()}
-        app.start_processing()
-        for t in threading.enumerate():
-            if t not in before:
-                t.join(timeout=15)
-                assert not t.is_alive(), "processing worker did not finish"
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        _run_start(app)
         assert calls, "process_pdf was not called"
         assert calls[0][1]["keep_segments"] == ()
+
+
+class TestFolderBatch:
+    """ADR 0007, D2/D3: folder input is batch-processed with the CLI's
+    ``_plan_jobs`` semantics, and the worker's error dialogs are robust
+    (no NameError from a late-bound ``except ... as e`` variable — PEP 3110)."""
+
+    def _make_folder(self, tmp_path: Path, names=("a.pdf", "b.pdf")) -> Path:
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        for n in names:
+            (ind / n).write_bytes(b"%PDF-1.4 dummy")
+        return ind
+
+    def _fill(self, app, in_text: str, out_text: str = "") -> None:
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, in_text)
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, out_text)
+
+    def test_folder_batch_processes_each_pdf_into_output_folder(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        calls = []
+
+        def fake_process_pdf(*args, **kwargs):
+            calls.append((args[0], args[1]))
+            from smartboard_invert.pdfpipeline import ProcessResult
+
+            return ProcessResult(input_path=args[0], output_path=args[1])
+
+        monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
+        app = gui.SmartboardGUI(tk_root)
+        ind = self._make_folder(tmp_path)
+        outd = tmp_path / "outputs"
+        self._fill(app, str(ind), str(outd))
+        _run_start(app)
+        assert calls == [
+            (ind / "a.pdf", outd / "a.pdf"),
+            (ind / "b.pdf", outd / "b.pdf"),
+        ]
+
+    def test_folder_without_output_folder_warns_without_worker(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        shown = []
+        monkeypatch.setattr(
+            gui.messagebox, "showwarning", lambda t, m: shown.append((t, m))
+        )
+        calls = []
+        monkeypatch.setattr(
+            gui, "process_pdf", lambda *a, **k: calls.append(a)
+        )
+        app = gui.SmartboardGUI(tk_root)
+        self._fill(app, str(self._make_folder(tmp_path)))
+        _run_start(app)
+        assert shown, "a warning dialog must be shown"
+        assert not calls, "no worker may start without an output folder"
+
+    def test_worker_error_dialog_is_shown_without_nameerror(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        """The user's v0.7.1 crash: the error dialog itself raised NameError
+        (the lambda ran after the except block unbound `e`)."""
+        shown = []
+        monkeypatch.setattr(
+            gui.messagebox, "showerror", lambda t, m: shown.append((t, m))
+        )
+
+        def boom(*a, **k):
+            raise gui.SmartboardError("boom-input")
+
+        monkeypatch.setattr(gui, "process_pdf", boom)
+        app = gui.SmartboardGUI(tk_root)
+        self._fill(app, str(_dummy_pdf(tmp_path)), str(tmp_path / "out.pdf"))
+        _run_start(app)
+        app._poll_events()  # pump the queued dialog lambda (main thread)
+        assert shown, "an error dialog must be shown"
+        assert "boom-input" in shown[-1][1]

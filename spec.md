@@ -232,3 +232,33 @@ sichtbaren Bereich** enthalten (User-Feedback 2026‑11‑16). Grundlage:
 *Phase 5 addendum:* 2026‑11‑16, **Supervisor**
 
 ---
+
+## Phase 6 (2026‑11‑16): Crop-Robustheit + GUI-Ordner-Batch + Fehlerdialoge (v0.7.2)
+
+Phase 6 behebt zwei User-Bugreports zu v0.7.1: (1) Crop produzierte auf
+Dokumenten mit **versetztem MediaBox/CropBox** (Ursprung ≠ (0,0)) falsch
+geklippte Seiten („dünner Rahmen, viel Weiß, Streifen in der Mitte");
+(2) die GUI crashte bei Ordner-Input — der Fehlerdialog selbst war kaputt
+(`NameError` durch späte Bindung der `except`-Variable, PEP 3110), und
+Ordner-Batch war in der GUI nie implementiert (CLI hatte sie).
+Grundlage: [ADR 0007](docs/adr/0007-crop-render-slice-und-gui-ordner-batch.md).
+
+### 6.1 Geänderte Anforderungen
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P6‑FR‑1** | Crop per Render-Slice | `_save_cropped` rendert die faithful-Seite mit dem Processing-DPI und schneidet exakt `rect_px` aus (dasselbe Rechteck wie Transformation/Verifikation); der Slice wird 1:1 in eine Seite der Größe `rect_pt` eingebettet. Keine Pixel→Seitenraum-Transformation (der frühere `show_pdf_page(clip=…)`-Weg brach an PyMuPDF-2.x-Koordinatenraum-Inkonsistenzen bei versetzten Seiten). Qualitäts-Trade-off: fremder Vektor-Content *innerhalb* des Board-Rechtecks wird statt vektor-exakt mit dem Processing-DPI gerastert (Board-Bereich selbst ist nach der Transformation ohnehin Raster; `--dpi 300` für schärfere Ausgabe). |
+| **P6‑FR‑2** | GUI-Ordner-Batch | Ordner-Input verarbeitet die GUI wie die CLI (`_plan_jobs`-Semantik: sortierte `*.pdf` des Ordners → Output-Ordner, pro Datei `<name>.pdf`, kein Rekurs; Einzel-Fehler unterbrechen nicht den Batch). Einzel-Datei: unverändert (page-level Progress). Batch: file-level Progress + Summary-Dialog („Saved N file(s) to …" bzw. „N of M failed" mit Details). Ordner ohne Output-Ordner → Warning im Hauptthread, kein Worker. |
+| **P6‑FR‑3** | Robuste GUI-Fehlerdialoge | Alle `messagebox`-Lambdas im Worker binden ihre Nachricht eager (`lambda t=title, m=message, f=fn: f(t, m)`); `except ... as e`-Variablen sind am Ende des Blocks ungebunden (PEP 3110) und durften nicht mehr als Free Variable verzögert gelesen werden. |
+
+### 6.2 Abweichungen (dokumentiert)
+
+| # | Abweichung | Begründung |
+|---|------------|------------|
+| **P6‑D‑1** | ADR 0003 „vector-exact" für den Crop-Post-Stage wird revidiert (P6‑FR‑1): Board-Seiten enthalten nach der Transformation nur Raster-Content im Board-Bereich → kein Qualitätsverlust dort; Vektor außerhalb des Rechtecks wird weggeschnitten; Vektor *innerhalb* des Rechtecks (selten) wird gerastert. | Repariert den User-Report (falsch geklippte Offset-MediaBox-Seiten); PyMuPDF 2.1 berichtet `page.rect`/`get_image_info`/`show_pdf_page(clip=…)` in inkonsistenten Koordinatenräumen (empirisch verifiziert: origin-(0,0)-Seite: crop == faithful-Slice mit Diff 0; Offset-Seite: Mismatch). Der Render-Slice ist version-unabhängig und deterministisch (Regressionstests: Offset-MediaBox- und Offset-CropBox-Seiten, crop-Render == faithful-Slice, Diff ≤ 8 im 2-px-erodierten Inneren). |
+
+---
+
+*Phase 6 addendum:* 2026‑11‑16, **Supervisor**
+
+---
