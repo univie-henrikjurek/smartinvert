@@ -281,6 +281,6 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
 ## Next Step
-Phase 5 (color options) is ready on branch `feature/color-options` in a PR
-(CI 3.9 + 3.13 runs there). After user sign-off: merge to master, tag
-v0.5.0, update the release ZIP links, done.
+None – **v0.5.0 released** (crop + color options merged to master, tag
+`v0.5.0`). Both PRs closed. Distribution via the usual ZIP/clone +
+`start.sh`/`start.bat`.
