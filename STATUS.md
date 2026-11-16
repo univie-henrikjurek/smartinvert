@@ -146,6 +146,47 @@ crop 20, GUI module headless-skipped), coverage gate met; CLI smoke with all
 three flags (`--crop --bg-target 255,255,255 --keep-colors red,green`) and
 GUI instantiation verified. Tagged **v0.5.0**.
 
+**v0.6.0 – keep-hex (2026-11-16, tag v0.6.0).** Neue Option `--keep-hex`
+(CLI + JSON-Config `keep_hex` + GUI-Textfeld „Zusätzliche Hex-Farben",
+ADR 0004): explizite Hex-Farben und -bereiche, die zusätzlich zu den
+Namens-Farben `--keep-colors` von der Inversion ausgenommen werden.
+
+- Syntax: Kommaliste aus `RRGGBB` (Punkt; optionaler `#`, 3-stellige
+  Kurzform `F00` → `FF0000`) oder `RRGGBB-RRGGBB` (Bereich, Endpunkte in
+  beliebiger Reihenfolge, aufsteigend normalisiert). Beispiel (Nutzerfall):
+  `FF0000, 00FF00, 000001-0000FF` = exakt Rot, exakt Grün, ganze blaue Achse
+  vom dunkelsten bis zum hellsten Blau.
+- Semantik (ADR 0004 D2): ein Pixel wird exkludiert, wenn sein euklidischer
+  Abstand zur **Strecke** zwischen den Endpunkten ≤ `HEX_TOL` (50) ist
+  (Punkt: Abstand zum Punkt) **und** der Chroma-Guard (max−min der Kanäle ≥
+  `HEX_MIN_CHROMA` = 24) erfüllt ist. Der Guard verhindert, dass der dunkle
+  Board-Hintergrund (neutrales Grau, Chroma ≈ 0) von Bereichen „verschluckt"
+  wird, die am RGB-Ursprung ansetzen — er bleibt invertiert. Dokumentierter
+  Caveat: praktisch unsichtbare Extremwerte (Chroma < 24, z. B. (0,0,8))
+  werden bewusst nicht exkludiert; neutrale Graubereiche werden nicht
+  unterstützt.
+- Union mit der `--keep-colors`-Maske, letzter Schritt auf dem Original
+  (Vorrang vor Complement/Remap, ADR 0002). Leer (Default) = aus,
+  **bit-identisch zu v0.5.0** (Regressionstest auf Rendering-Ebene).
+- Kern: `hex_keep_mask` + `validate_keep_segments` (zentr. Chokepoint,
+  `processing.py`); `parse_keep_hex` in `cli.py` (Regex über ASCII-Hex —
+  Unicode-Ziffern-Falle ausgeschlossen). `process_pdf`/`enhance_image[_ex]`/
+  `invert_region` erhalten `keep_segments` (Keyword; Validierung in
+  `process_pdf` vor jeder Datei-Operation).
+- GUI: Textfeld Zeile 8 (Fenster 660×830), Validierung im Hauptthread **vor**
+  Worker-Start (Fehlerdialog, Controls bleiben betätigbar, kein Worker);
+  Feld wird nach einem Run nicht geleert; Preview validiert ebenfalls zuerst.
+- Tests: 83 neue (Parser inkl. Unicode-Digit-Fall, Maske inkl. Grauschutz +
+  Caveat, Union/Vorrang, bit-identische Regression, CLI/Config-e2e,
+  Pipeline-E2E mit synthetischem Board inkl. reinem blauen Mark, GUI-Flows).
+  268 passed + 1 skipped (headless), GUI-Modul 10 passed unter Xvfb,
+  Coverage 91.59 % (Gate 80 %). GUI-E2E (echtes Tk-Fenster) grün inkl. beider
+  neuer Flows.
+- Hinweis: Subagent-Tool in der Implementierungs-Session nicht verfügbar
+  (Backend-Fehler beim Session-Start) — Supervisor hat die
+  Coder/Tester/Reviewer-Schritte direkt ausgeführt; Workflow (ADR →
+  Implementierung → Tests → Review → PR/CI/Tag) unverändert.
+
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
   (zero prerequisites, ~150–200 MB) for releases — ultimate comfort for
@@ -281,6 +322,5 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
 ## Next Step
-None – **v0.5.0 released** (crop + color options merged to master, tag
-`v0.5.0`). Both PRs closed. Distribution via the usual ZIP/clone +
-`start.sh`/`start.bat`.
+None – **v0.6.0 released** (`--keep-hex` merged to master, tag `v0.6.0`,
+PR #3 closed). Distribution via the usual ZIP/clone + `start.sh`/`start.bat`.
