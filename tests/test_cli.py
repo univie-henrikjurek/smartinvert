@@ -520,3 +520,187 @@ class TestPhase3CliFlags:
         )
         assert rc == 1
         assert "[ERROR]" in capsys.readouterr().err
+
+
+class TestKeepHexParser:
+    """Phase 3 (P3-FR-11 / ADR 0004 D1): parse_keep_hex – single choke point
+    for the --keep-hex flag and the JSON config key."""
+
+    def test_empty_is_off(self):
+        assert cli.parse_keep_hex("") == ()
+        assert cli.parse_keep_hex("   ") == ()
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            # the user's example: exact red, exact green, whole blue axis
+            (
+                "FF0000, 00FF00, 000001-0000FF",
+                (
+                    ((255, 0, 0), (255, 0, 0)),
+                    ((0, 255, 0), (0, 255, 0)),
+                    ((0, 0, 1), (0, 0, 255)),
+                ),
+            ),
+            ("FF0000", (((255, 0, 0), (255, 0, 0)),)),
+            ("#FF0000", (((255, 0, 0), (255, 0, 0)),)),
+            ("ff0000", (((255, 0, 0), (255, 0, 0)),)),
+            # 3-digit shorthand expands digit-wise
+            ("F00", (((255, 0, 0), (255, 0, 0)),)),
+            ("0F0", (((0, 255, 0), (0, 255, 0)),)),
+            # range with reversed endpoints is normalised to ascending order
+            ("0000FF-000001", (((0, 0, 1), (0, 0, 255)),)),
+            ("#F00-0F0", (((0, 255, 0), (255, 0, 0)),)),
+            # empty entries and whitespace are tolerated
+            ("FF0000,,  ,00FF00", (
+                ((255, 0, 0), (255, 0, 0)),
+                ((0, 255, 0), (0, 255, 0)),
+            )),
+            ("  FF0000 , 00FF00  ", (
+                ((255, 0, 0), (255, 0, 0)),
+                ((0, 255, 0), (0, 255, 0)),
+            )),
+        ],
+    )
+    def test_valid(self, text, expected):
+        assert cli.parse_keep_hex(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "zzz",           # not hex
+            "FF000",         # 5 digits
+            "1234567",       # 7 digits
+            "FF0000-",       # dangling range dash
+            "-FF0000",       # leading range dash
+            "FF0000-00G0FF", # non-hex digit in range endpoint
+            "FF0000-00FF00-00FF00",  # two dashes
+            "FF 0000",       # inner space
+            "#",             # bare prefix
+            "-",             # bare dash
+            "0x123456",      # 0x prefix is not allowed
+            "\u0661F0000",   # Unicode digit (arabic-indic 1): no isdigit() trap
+        ],
+    )
+    def test_invalid(self, text):
+        with pytest.raises(cli.SmartboardError, match="keep-hex"):
+            cli.parse_keep_hex(text)
+
+    def test_real_default_is_empty(self):
+        assert cli.REAL_DEFAULTS["keep_hex"] == ""
+        assert cli.parse_keep_hex(cli.REAL_DEFAULTS["keep_hex"]) == ()
+
+    def test_resolve_options_default_and_override(self):
+        args = cli.build_parser().parse_args([])
+        assert cli.resolve_options(args, {})["keep_hex"] == ""
+        args = cli.build_parser().parse_args(["--keep-hex", "FF0000"])
+        assert cli.resolve_options(args, {})["keep_hex"] == "FF0000"
+        # config file value is picked up when the flag is absent
+        args = cli.build_parser().parse_args([])
+        assert cli.resolve_options(args, {"keep_hex": "00FF00"})["keep_hex"] == "00FF00"
+
+
+class TestKeepHexCliFlags:
+    """Phase 3 (P3-FR-11 / P3-D-3): --keep-hex through the full CLI and the
+    JSON config file."""
+
+    BOARD = (150, 150, 300, 550)  # x, y, w, h in pt
+
+    def _board_pdf(self, tmp_path: Path) -> Path:
+        src = tmp_path / "board.pdf"
+        synth.make_pdf(src, [{"kind": "image", "rect": self.BOARD, "bg": (0, 0, 0)}])
+        return src
+
+    def test_keep_hex_flag_end_to_end(self, tmp_path):
+        src = self._board_pdf(tmp_path)
+        outd = tmp_path / "outputs"
+        result = run_cli(
+            "--input", str(src),
+            "--output", str(outd),
+            "--keep-hex", "FF0000, 00FF00, 000001-0000FF",
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert (outd / "board.pdf").is_file()
+
+    def test_keep_hex_empty_flag_is_off(self, tmp_path):
+        src = self._board_pdf(tmp_path)
+        outd = tmp_path / "outputs"
+        result = run_cli(
+            "--input", str(src), "--output", str(outd), "--keep-hex", ""
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert (outd / "board.pdf").is_file()
+
+    def test_keep_hex_bogus_fails_with_error(self, tmp_path, capsys):
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        synth.make_pdf(ind / "b.pdf", [{"kind": "image", "rect": self.BOARD, "bg": (0, 0, 0)}])
+        rc = cli.main(
+            [
+                "--input", str(ind),
+                "--output", str(tmp_path / "out"),
+                "--keep-hex", "zzz",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "[ERROR]" in err
+        assert "keep-hex" in err
+
+    # --- --keep-hex through the JSON config (P3-D-3) -----------------------
+
+    def test_config_file_keep_hex_takes_effect(self, tmp_path):
+        src = self._board_pdf(tmp_path)
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"keep_hex": "000001-0000FF"}')
+        outd = tmp_path / "outputs"
+        result = run_cli(
+            "--input", str(src), "--output", str(outd), "--config", str(cfg)
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert (outd / "board.pdf").is_file()
+
+    def test_config_file_null_keep_hex_falls_back_to_default(self, tmp_path):
+        src = self._board_pdf(tmp_path)
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"keep_hex": null}')
+        outd = tmp_path / "outputs"
+        result = run_cli(
+            "--input", str(src), "--output", str(outd), "--config", str(cfg)
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+
+    def test_cli_keep_hex_beats_config(self, tmp_path):
+        """An explicit --keep-hex flag beats the (invalid) config value."""
+        src = self._board_pdf(tmp_path)
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"keep_hex": "zzz"}')
+        outd = tmp_path / "outputs"
+        result = run_cli(
+            "--input", str(src),
+            "--output", str(outd),
+            "--config", str(cfg),
+            "--keep-hex", "FF0000",
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert (outd / "board.pdf").is_file()
+
+    def test_config_file_invalid_keep_hex_fails_cleanly(self, tmp_path, capsys):
+        """A bad keep_hex in the config must produce the same clean error as
+        a bad CLI flag (no traceback, NFR-5)."""
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        synth.make_pdf(ind / "b.pdf", [{"kind": "image", "rect": self.BOARD, "bg": (0, 0, 0)}])
+        cfg = tmp_path / "c.json"
+        cfg.write_text('{"keep_hex": "zzz"}')
+        rc = cli.main(
+            ["--input", str(ind), "--output", str(tmp_path / "out"), "--config", str(cfg)]
+        )
+        assert rc == 1
+        assert "[ERROR]" in capsys.readouterr().err
+
+    def test_config_file_keep_hex_bad_type_fails(self, tmp_path):
+        cfg = tmp_path / "badtype.json"
+        cfg.write_text('{"keep_hex": 42}')
+        rc = cli.main(["--config", str(cfg)])
+        assert rc == 1

@@ -52,7 +52,8 @@ untouched.*
    (`--bg-target R,G,B`, e.g. pure white `255,255,255` for dark boards),
    plus optional (legacy) CLAHE contrast enhancement and morphological
    cleaning. Marker colours can be preserved and left un-inverted
-   (`--keep-colors`; default `red,green`, since v0.5.0).
+   (`--keep-colors`; default `red,green`, since v0.5.0), and explicit hex
+   colours / ranges can be excluded as well (`--keep-hex`, since v0.6.0).
 3. **Page-faithful output** — the page is reproduced with its original size and
    one of the three strategies above. Optionally (`--crop` or the GUI
    checkbox, ADR 0003) the finished document is re-wrapped afterwards so every
@@ -130,6 +131,10 @@ Usage: smartinvert -i INPUT [-o OUTPUT] [options]
       --keep-colors LIST  Marker colours left un-inverted (comma-separated
                           from red,green,blue,yellow; 'none' = invert
                           everything). Default: red,green
+      --keep-hex SPEC     Additional colours / colour ranges (hex) left
+                          un-inverted, comma-separated 'RRGGBB' or
+                          'RRGGBB-RRGGBB', e.g. 'FF0000, 00FF00,
+                          000001-0000FF'. Empty = off (default)
       --debug             Write per-page debug composites to <output>/debug/
       --config PATH       Optional JSON config file; CLI flags take precedence
   -v / -vv                Log level INFO / DEBUG
@@ -143,13 +148,23 @@ past failing files). Run `smartinvert --help` for the full reference.
 > colours are preserved). For the exact v0.4.1 behaviour use
 > `--bg-target complement --keep-colors none`.
 
+> `--keep-hex` (since v0.6.0): each entry is either a single colour
+> (`RRGGBB`; `#` prefix and 3-digit shorthand allowed, e.g. `#F00`) or a
+> range (`RRGGBB-RRGGBB`, endpoints in either order) that covers every
+> colour within a distance of 50 from the segment between the endpoints —
+> e.g. `000001-0000FF` keeps the whole blue axis from darkest to lightest
+> blue. A pixel is only excluded when it is also sufficiently saturated
+> (chroma ≥ 24): neutral grays, in particular the dark board background,
+> are never excluded.
+
 ## Config file
 
 `--config PATH` loads a JSON file holding any of the options `input`,
 `output`, `dpi`, `invert`, `clahe`, `clean`, `crop`, `bg_target`,
-`keep_colors` and `debug`. `null` or a missing key uses the default, and
-explicit CLI flags always take precedence. String options use CLI syntax
-(e.g. `"bg_target": "255,255,255"`, `"keep_colors": "red,green"`).
+`keep_colors`, `keep_hex` and `debug`. `null` or a missing key uses the
+default, and explicit CLI flags always take precedence. String options use
+CLI syntax (e.g. `"bg_target": "255,255,255"`, `"keep_colors": "red,green"`,
+`"keep_hex": "FF0000, 000001-0000FF"`).
 
 ## GUI
 
@@ -175,6 +190,9 @@ start.bat         # Windows
 - **Rot erhalten** / **Grün erhalten** — keep the red/green marker colours
   un-inverted (both on by default; blue/yellow and free `R,G,B` targets are
   CLI-only)
+- **Zusätzliche Hex-Farben** — explicit hex colours / ranges left
+  un-inverted, same syntax as `--keep-hex` (e.g. `FF0000, 00FF00,
+  000001-0000FF`; empty = off, since v0.6.0)
 - **Preview first page** — original and processed page side by side
 - **Run** — processes with a progress bar and reports the output location
 

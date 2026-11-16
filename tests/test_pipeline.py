@@ -1034,3 +1034,128 @@ def test_phase3_bit_exact_v041_regression(tmp_path):
     dst2 = tmp_path / "out2.pdf"
     process_pdf(src, dst2, dpi=DPI, bg_target=None, keep_colors=frozenset())
     assert np.array_equal(pdf_to_images(dst, dpi=DPI)[0], pdf_to_images(dst2, dpi=DPI)[0])
+
+
+# --- Phase 3: keep_hex (ADR 0004, P3-FR-11) --------------------------------
+
+
+class TestKeepHexPipeline:
+    """P3-FR-11 / ADR 0004: explicit hex specs through process_pdf – the
+    union with keep_colors, the precedence, the bit-identical regression for
+    the empty default, and the validation before any file work."""
+
+    BLUE_MARK = ((100, 400, 80, 60), (255, 0, 0))  # BGR: pure blue (RGB 0000FF)
+    BLUE_AXIS = (((0, 0, 1), (0, 0, 255)),)
+
+    def _pages(self):
+        """Dark-gray board with white chalk text and a pure-blue marker."""
+        return [
+            {
+                "kind": "image",
+                "rect": (150, 150, 300, 550),
+                "bg": (35, 30, 30),
+                "text": True,
+                "seed": 0,
+                "marks": [self.BLUE_MARK],
+            }
+        ]
+
+    def _inner_box(self, dst, rect_pt):
+        """Render-pixel box (quarter inset) of the blue mark on the output."""
+        x0, y0, x1, y1 = _marker_render_box(self.BLUE_MARK, rect_pt)
+        a = pdf_to_images(dst, dpi=DPI)[0]
+        return a[
+            int(y0 + 0.25 * (y1 - y0)) : int(y1 - 0.25 * (y1 - y0)),
+            int(x0 + 0.25 * (x1 - x0)) : int(x1 - 0.25 * (x1 - x0)),
+        ]
+
+    def test_blue_mark_preserved_by_hex_range(self, tmp_path):
+        """E2E: the pure-blue marker keeps its original colour when the blue
+        axis range is kept; the board background is still transformed."""
+        src, dst, truths, result = process(
+            tmp_path,
+            self._pages(),
+            keep_colors=frozenset(),
+            keep_segments=self.BLUE_AXIS,
+        )
+        page = result.pages[0]
+        assert page.detected, page.message
+        assert page.method == "image-replace"
+        # built-in verification: nothing outside the detected rect changed
+        assert page.verification.get("outside_max_diff") == 0
+
+        inner = self._inner_box(dst, truths[0]["rect_pt"])
+        color = np.asarray(self.BLUE_MARK[1], dtype=np.int16)
+        assert np.abs(inner.astype(np.int16) - color).max() <= 5
+
+    def test_blue_mark_transformed_without_keep_hex(self, tmp_path):
+        """Same input, empty keep_segments: the blue marker is inverted
+        (complement of RGB 0000FF is RGB FFFF00 – the blue channel drops)."""
+        src, dst, truths, result = process(
+            tmp_path, self._pages(), keep_colors=frozenset(), keep_segments=()
+        )
+        assert result.pages[0].detected, result.pages[0].message
+        inner = self._inner_box(dst, truths[0]["rect_pt"])
+        # BGR channel 0 = blue: after the strict complement it is ~0,
+        # channels 1/2 (green/red) are ~255
+        assert float(inner[..., 0].mean()) < 30
+        assert float(inner[..., 1].mean()) > 200
+        assert float(inner[..., 2].mean()) > 200
+
+    def test_union_with_keep_colors(self, tmp_path):
+        """Hex exclusions union with the name-based ones (independent
+        effects on different pixels)."""
+        red_mark = ((350, 700, 80, 60), (20, 20, 220))  # BGR: red marker
+        pages = self._pages()
+        pages[0]["marks"] = [self.BLUE_MARK, red_mark]
+        src, dst, truths, result = process(
+            tmp_path,
+            pages,
+            keep_colors=frozenset({"red"}),
+            keep_segments=self.BLUE_AXIS,
+        )
+        assert result.pages[0].detected, result.pages[0].message
+        a = pdf_to_images(dst, dpi=DPI)[0]
+        rect_pt = truths[0]["rect_pt"]
+        for mark, expected_bgr in (
+            (self.BLUE_MARK, np.asarray(self.BLUE_MARK[1], dtype=np.int16)),
+            (red_mark, np.asarray(red_mark[1], dtype=np.int16)),
+        ):
+            x0, y0, x1, y1 = _marker_render_box(mark, rect_pt)
+            inner = a[
+                int(y0 + 0.25 * (y1 - y0)) : int(y1 - 0.25 * (y1 - y0)),
+                int(x0 + 0.25 * (x1 - x0)) : int(x1 - 0.25 * (x1 - x0)),
+            ]
+            assert np.abs(inner.astype(np.int16) - expected_bgr).max() <= 5
+
+    def test_empty_keep_segments_bit_identical_to_v050(self, tmp_path):
+        """ADR 0004 D3 regression: keep_segments=() must produce exactly the
+        v0.5.0 output (empty = no hex exclusion at all)."""
+        src = tmp_path / "in.pdf"
+        make_pdf(src, self._pages())
+        dst1 = tmp_path / "out1.pdf"
+        dst2 = tmp_path / "out2.pdf"
+        process_pdf(src, dst1, dpi=DPI, keep_colors=frozenset())
+        process_pdf(src, dst2, dpi=DPI, keep_colors=frozenset(), keep_segments=())
+        assert np.array_equal(pdf_to_images(dst1, dpi=DPI)[0], pdf_to_images(dst2, dpi=DPI)[0])
+
+    @pytest.mark.parametrize(
+        "keep_segments",
+        [
+            None,
+            42,
+            "000001-0000FF",  # the CLI string is not a tuple of segments
+            (((256, 0, 0), (0, 0, 0)),),
+            (((True, 0, 0), (0, 0, 0)),),
+            (((255, 0), (255, 0, 0)),),
+        ],
+    )
+    def test_invalid_keep_segments_raise_before_any_file_work(
+        self, tmp_path, keep_segments
+    ):
+        src = tmp_path / "in.pdf"
+        make_pdf(src, [{"kind": "blank", "marks": []}])
+        dst = tmp_path / "out.pdf"
+        with pytest.raises(SmartboardError):
+            process_pdf(src, dst, dpi=DPI, keep_segments=keep_segments)
+        assert not dst.exists(), "validation must happen before any output"
