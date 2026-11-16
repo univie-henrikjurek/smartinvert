@@ -223,6 +223,32 @@ ist unverständlich. ADR 0005 (accepted):
 - Branch `feature/simplify-options` → PR #4 → CI grün (3.9 + 3.13) →
   Rebase-Merge nach master.
 
+**v0.7.1 – Crop als Default (2026-11-16, tag v0.7.1).** User-Feedback: im
+Standard-Run stimmen die Seitengrenzen (A4) nicht mit dem sichtbaren
+Board-Bereich überein; die Grenzen sollen nur den sichtbaren Bereich
+beinhalten. ADR 0006 (accepted):
+
+- Crop (ADR 0003) ist jetzt **Default AN** in allen Schichten:
+  `process_pdf(crop=True)`, CLI `REAL_DEFAULTS["crop"] = True`
+  (`--no-crop` für seitengetreue A4-Ausgabe), GUI-Checkbox „Auf Board
+  zuschneiden (Rand entfernen)" standardmäßig angehakt.
+- Seitenverhalten unverändert: nur Seiten mit erkanntem Board werden
+  zugeschnitten (exakt auf das Rechteck); Seiten ohne Board (inkl.
+  rotierter, A-11) bleiben in voller Größe; degenerate Rechtecke →
+  volle Seite.
+- Breaking Change für CLI-User mit A4-Erwartung: `--no-crop` angeben
+  (0.x-Linie, dokumentiert: ADR 0006, spec P5-FR-1/P5-D-1, README).
+- Tests: page-faithful-Tests pinnen jetzt `crop=False` explizit; der
+  Pipeline-Test-Helfer `process()` defaultet `crop=False` (Test-Kontrakt).
+  Neu: CLI-Default-Run-Test (crops ohne Flag),
+  `TestCropRegression.test_default_run_matches_explicit_crop` (Default ==
+  explizit crop=True, pixel-identisch; crop=False bleibt A4),
+  GUI-Default-Tests (Checkbox 1, `crop=True` erreicht `process_pdf`).
+  **269 passed + 1 skipped**, 13 GUI unter Xvfb, Coverage 91,55 %.
+- Verifikation am Sample: Default-Run → Seite 299,4 × 821,4 pt (= Board),
+  `--no-crop` → 595 × 842 pt (A4).
+- Branch `feature/crop-default-on` → PR #5 → CI grün → Rebase-Merge.
+
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
   (zero prerequisites, ~150–200 MB) for releases — ultimate comfort for
@@ -358,6 +384,7 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
 ## Next Step
-None – **v0.7.0 released** (Optionen vereinfacht: CLAHE/Noise-Cleaning raus,
-GUI reduziert; PR #4 merged, tag `v0.7.0`). Distribution via the usual
-ZIP/clone + `start.sh`/`start.bat`. Offen: Nutzer-Windows-Test der v0.7.0-ZIP.
+None – **v0.7.1 released** (Crop als Default: Seitengrenzen = sichtbarer
+Board-Bereich; PR #5 merged, tag `v0.7.1`). Distribution via the usual
+ZIP/clone + `start.sh`/`start.bat`. Offen: Nutzer-Windows-Test der
+v0.7.1-ZIP (neuer Default-Output: zugeschnittene Seiten).
