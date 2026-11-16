@@ -7,6 +7,9 @@ The GUI mirrors the CLI options but presents them in a graphical form:
 * Checkboxes for *Invert*, *CLAHE*, *Noise cleaning* and *Crop to board*.
 * *Target background* combobox (complement or pure white) and checkboxes to
   keep the red/green marker colours un-inverted.
+* *Zusätzliche Hex-Farben* entry: explicit hex colours / ranges (e.g.
+  ``FF0000, 00FF00, 000001-0000FF``) that are left un-inverted as well
+  (ADR 0004).
 * A *Preview* button that shows the first page before/after processing.
 * A *Run* button that processes the entire document and displays a progress bar.
 
@@ -39,6 +42,7 @@ import cv2
 import numpy as np
 
 from . import processing
+from .cli import parse_keep_hex
 from .pdfpipeline import process_pdf
 from .processing import SmartboardError
 
@@ -53,7 +57,7 @@ class SmartboardGUI:
     def __init__(self, master: Tk):
         self.master = master
         master.title("Smartboard PDF Inverter")
-        master.geometry("660x760")
+        master.geometry("660x830")
         self.create_widgets()
         # Thread-safe event queue: worker threads must never touch Tk
         # widgets directly (tkinter is not thread-safe); they enqueue
@@ -128,6 +132,16 @@ class SmartboardGUI:
         Checkbutton(opts_frame, text="Rot erhalten", variable=self.keep_red_var).grid(row=6, column=0, columnspan=2, sticky="w")
         self.keep_green_var = IntVar(value=1)
         Checkbutton(opts_frame, text="Grün erhalten", variable=self.keep_green_var).grid(row=7, column=0, columnspan=2, sticky="w")
+        # Explicit hex colours / ranges left un-inverted (ADR 0004); empty =
+        # off.  Parsed in the main thread before the worker starts (see
+        # _parse_keep_hex); the field is intentionally NOT cleared after a run.
+        Label(opts_frame, text="Zusätzliche Hex-Farben:").grid(row=8, column=0, sticky="w")
+        self.keep_hex_entry = Entry(opts_frame, width=44)
+        self.keep_hex_entry.grid(row=8, column=1, columnspan=2, sticky="w", padx=5)
+        Label(
+            opts_frame,
+            text="(z.B. FF0000, 00FF00, 000001-0000FF — leer = aus)",
+        ).grid(row=9, column=0, columnspan=3, sticky="w")
 
         # ---------- Preview ----------
         preview_frame = Frame(self.master)
@@ -161,6 +175,20 @@ class SmartboardGUI:
                 if var.get()
             ),
         }
+
+    def _parse_keep_hex(self):
+        """Parse the hex-keep entry (main thread, single choke point).
+
+        Returns the parsed segments (empty tuple = feature off), or ``None``
+        when the entry is invalid — in which case an error dialog is shown
+        and the caller must abort *before* disabling controls or starting
+        the worker.
+        """
+        try:
+            return parse_keep_hex(self.keep_hex_entry.get())
+        except SmartboardError as e:
+            messagebox.showerror("Ungültige Hex-Farben", str(e))
+            return None
 
     def browse_file(self):
         path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
@@ -206,6 +234,11 @@ class SmartboardGUI:
         if pdf_path is None:
             return
         try:
+            # Validate the hex-keep entry in the main thread BEFORE the
+            # (potentially slow) render — fail fast like start_processing.
+            keep_segments = self._parse_keep_hex()
+            if keep_segments is None:
+                return
             images = processing.pdf_to_images(pdf_path, dpi=int(self.dpi_var.get()))
             if not images:
                 raise SmartboardError("No pages rendered")
@@ -218,6 +251,7 @@ class SmartboardGUI:
                 clean=bool(self.clean_var.get()),
                 bg_target=transform_options["bg_target"],
                 keep_colors=transform_options["keep_colors"],
+                keep_segments=keep_segments,
             )
             if not det.found:
                 logger.warning("No smartboard region on first page: %s", det.message)
@@ -266,6 +300,11 @@ class SmartboardGUI:
                 if out_field
                 else in_p.with_name(in_p.stem + "_inverted.pdf")
             )
+        # Validate the hex-keep entry first (main thread): on an error the
+        # dialog is shown and the run is aborted WITHOUT disabling controls.
+        keep_segments = self._parse_keep_hex()
+        if keep_segments is None:
+            return
         # Read the Tk variables in the main thread (Tk thread-safety) and hand
         # plain values to the worker.
         options = {
@@ -274,6 +313,7 @@ class SmartboardGUI:
             "clahe": bool(self.clahe_var.get()),
             "clean": bool(self.clean_var.get()),
             "crop": bool(self.crop_var.get()),
+            "keep_segments": keep_segments,
             **self._transform_options(),
         }
         # Disable controls while processing.
@@ -319,6 +359,7 @@ class SmartboardGUI:
                 crop=options["crop"],
                 bg_target=options.get("bg_target"),
                 keep_colors=options.get("keep_colors", frozenset()),
+                keep_segments=options.get("keep_segments", ()),
                 progress=on_progress,
             )
             self._events.put(

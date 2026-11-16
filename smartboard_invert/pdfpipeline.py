@@ -39,7 +39,7 @@ import numpy as np
 
 from . import processing
 from .detection import DetectionResult, Rect, clamp_rect, detect_smartboard_region, rect_overlap_fraction
-from .processing import KEEPABLE_COLORS, SmartboardError, fitz
+from .processing import HexSegment, KEEPABLE_COLORS, SmartboardError, fitz
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,7 @@ def process_pdf(
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
+    keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> ProcessResult:
     """Process a whole PDF (see module docstring).
 
@@ -135,6 +136,11 @@ def process_pdf(
         pixels keep their original values – exclusion takes precedence over
         complement/remap.  Empty (default) = everything is transformed
         (v0.4.1 behaviour).
+    keep_segments:
+        Explicit hex colours / ranges (pairs of user-facing RGB endpoints,
+        see :func:`processing.hex_keep_mask`, ADR 0004) whose pixels keep
+        their original values – same precedence as *keep_colors*.  Empty
+        (default) = v0.5.0 behaviour (no hex exclusion).
 
     Raises
     ------
@@ -152,6 +158,7 @@ def process_pdf(
             f"unknown color(s) in keep_colors: {', '.join(sorted(unknown))} "
             f"(allowed: {', '.join(sorted(KEEPABLE_COLORS))})"
         )
+    keep_segments = processing.validate_keep_segments(keep_segments)
     bg_target = processing.validate_bg_target(bg_target)
 
     input_path = Path(input_path).expanduser().resolve()
@@ -186,6 +193,7 @@ def process_pdf(
                 stem=input_path.stem,
                 bg_target=bg_target,
                 keep_colors=keep_colors,
+                keep_segments=keep_segments,
             )
             result.pages.append(page_result)
             if progress is not None:
@@ -228,6 +236,7 @@ def _process_page(
     stem: str,
     bg_target: Optional[Tuple[int, int, int]],
     keep_colors: AbstractSet[str],
+    keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> PageResult:
     page = src.load_page(pno)
     page_rect = page.rect
@@ -324,6 +333,7 @@ def _process_page(
             clean=clean,
             bg_target=bg_target,
             keep_colors=keep_colors,
+            keep_segments=keep_segments,
         )
         if not replaced:
             # fall back: clear the copied content, embed the full-page image
@@ -331,6 +341,7 @@ def _process_page(
             processed = _transform_render(
                 img_orig, rect_px, invert, apply_clahe, clean,
                 bg_target=bg_target, keep_colors=keep_colors,
+                keep_segments=keep_segments,
             )
             _embed_full_page_image(new_page, page_rect, processed)
     else:
@@ -338,6 +349,7 @@ def _process_page(
         processed = _transform_render(
             img_orig, rect_px, invert, apply_clahe, clean,
             bg_target=bg_target, keep_colors=keep_colors,
+            keep_segments=keep_segments,
         )
         _embed_full_page_image(new_page, page_rect, processed)
 
@@ -366,6 +378,7 @@ def _transform_render(
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
+    keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> np.ndarray:
     """Apply the in-region transformation to a full-page render."""
     if not (invert or apply_clahe or clean):
@@ -383,6 +396,7 @@ def _transform_render(
             original=region_orig,
             bg_target=bg_target,
             keep_colors=keep_colors,
+            keep_segments=keep_segments,
         )
     out[y0:y1, x0:x1] = region
     return out
@@ -516,6 +530,7 @@ def _try_image_replace(
     clean: bool,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
+    keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> bool:
     """Replace the board image XObject with its inverted version.
 
@@ -622,6 +637,7 @@ def _try_image_replace(
             original=region_orig,
             bg_target=bg_target,
             keep_colors=keep_colors,
+            keep_segments=keep_segments,
         )
     processed = native.copy()
     processed[y0:y1, x0:x1] = region

@@ -417,3 +417,259 @@ class TestKeepColorsPriority:
             processing.invert_or_remap(np.zeros((10, 10, 3), dtype=np.float32))
         with pytest.raises(processing.SmartboardError):
             processing.invert_or_remap(None)
+
+
+# --- Phase 3: keep_hex (ADR 0004, P3-FR-11) --------------------------------
+
+
+class TestValidateKeepSegments:
+    """Central validation choke point for keep_segments (analogous to
+    validate_bg_target)."""
+
+    def test_empty_returns_empty_tuple(self):
+        assert processing.validate_keep_segments(()) == ()
+
+    def test_generator_accepted(self):
+        segs = [((255, 0, 0), (255, 0, 0)), ((0, 0, 1), (0, 0, 255))]
+        assert processing.validate_keep_segments(s for s in segs) == tuple(segs)
+
+    def test_lists_normalised_to_tuples(self):
+        assert processing.validate_keep_segments([[(255, 0, 0), [0, 255, 0]]]) == (
+            ((255, 0, 0), (0, 255, 0)),
+        )
+
+    def test_order_preserved(self):
+        segs = [((0, 0, 1), (0, 0, 255)), ((255, 0, 0), (255, 0, 0))]
+        assert processing.validate_keep_segments(segs) == tuple(segs)
+
+    def test_point_segment_passthrough(self):
+        seg = ((255, 0, 0), (255, 0, 0))
+        assert processing.validate_keep_segments((seg,)) == (seg,)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            None,  # None is rejected (use an empty tuple instead)
+            42,  # not iterable
+            3.14,  # not iterable
+            "FF0000",  # a string is not a pair of endpoints
+            (((255, 0, 0), (256, 0, 0)),),  # > 255
+            (((255, 0, 0), (-1, 0, 0)),),  # < 0
+            (((255, 0, 0), (True, 0, 0)),),  # bool is not an int channel
+            (((255, 0, 0), (1.5, 0, 0)),),  # float is not an int channel
+            (((255, 0), (255, 0, 0)),),  # endpoint with 2 channels
+            (((255, 0, 0, 0), (255, 0, 0)),),  # endpoint with 4 channels
+            (((255, 0, 0),),),  # single endpoint, not a pair
+            (((255, 0, 0), (255, 0, 0), (255, 0, 0)),),  # triple, not a pair
+            (((255, 0, 0), "00FF00"),),  # endpoint not a sequence of ints
+        ],
+    )
+    def test_invalid_raises(self, bad):
+        with pytest.raises(processing.SmartboardError):
+            processing.validate_keep_segments(bad)
+
+
+class TestHexKeepMask:
+    """ADR 0004, D2: euclidean distance to the segment/point <= HEX_TOL AND
+    the chroma guard (max - min channel >= HEX_MIN_CHROMA)."""
+
+    @staticmethod
+    def labelled_image():
+        """Small BGR image with labelled pixels; returns (img, coords).
+
+        Coordinates map to (row, col); colours are given in RGB in the
+        comment, stored as BGR:
+        """
+        img = np.zeros((3, 4, 3), dtype=np.uint8)
+        img[0, 0] = (0, 0, 255)    # RGB FF0000: pure red
+        img[0, 1] = (25, 25, 25)   # RGB 191919: dark gray (chroma 0)
+        img[0, 2] = (50, 0, 255)   # RGB F00032: red + 50 blue (d == HEX_TOL)
+        img[0, 3] = (0, 0, 200)    # RGB C80000: dark red (d == 55 from FF0000)
+        img[1, 0] = (128, 0, 0)    # RGB 000080: mid blue (on the blue axis)
+        img[1, 1] = (200, 10, 10)  # RGB 0A0AC8: noisy blue (d ~ 14 from axis)
+        img[1, 2] = (8, 0, 0)      # RGB 000008: extreme dark blue (chroma 8)
+        img[1, 3] = (255, 255, 255)  # RGB FFFFFF: white (chroma 0)
+        img[2, 0] = (10, 10, 10)   # RGB 0A0A0A: near-black gray
+        img[2, 1] = (0, 0, 255)    # RGB FF0000: pure red again
+        return img
+
+    BLUE_AXIS = (((0, 0, 1), (0, 0, 255)),)
+    RED_POINT = (((255, 0, 0), (255, 0, 0)),)
+
+    def test_empty_segments_all_false(self):
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, ())
+        assert mask.shape == img.shape[:2]
+        assert not mask.any()
+
+    def test_point_exact_match(self):
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, self.RED_POINT)
+        assert mask[0, 0] and mask[2, 1]  # the two pure-red pixels
+
+    def test_point_within_tolerance(self):
+        # red blended ~10% with the dark board: RGB (245, 10, 10),
+        # d = sqrt(10^2 + 10^2 + 10^2) ~ 17 <= 50
+        img = self.labelled_image()
+        img[0, 0] = (10, 10, 245)  # BGR
+        mask = processing.hex_keep_mask(img, self.RED_POINT)
+        assert mask[0, 0]
+
+    def test_point_outside_tolerance(self):
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, self.RED_POINT)
+        # RGB C80000 is 55 from FF0000 (> HEX_TOL) and the other pixels are
+        # far from pure red as well
+        assert not mask[0, 3]
+
+    def test_point_at_exact_tolerance_kept(self):
+        """Boundary: distance == HEX_TOL (50) counts as kept (<=)."""
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, self.RED_POINT)
+        # RGB F00032: d = 50 exactly (chroma 205 >= 24)
+        assert mask[0, 2]
+
+    def test_range_mid_axis_kept(self):
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, self.BLUE_AXIS)
+        assert mask[1, 0]  # (0, 0, 128) is exactly on the segment
+
+    def test_range_noisy_blue_kept(self):
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, self.BLUE_AXIS)
+        assert mask[1, 1]  # noisy blue, d ~ 14 <= 50, chroma 190
+
+    def test_range_dark_gray_not_kept_chroma_guard(self):
+        """The critical case: the dark board background near the RGB origin
+        is within HEX_TOL of the blue axis but must NOT be excluded (it has
+        to be inverted)."""
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, self.BLUE_AXIS)
+        assert not mask[0, 1]  # dark gray, chroma 0
+        assert not mask[2, 0]  # near-black gray, chroma 0
+
+    def test_range_extreme_dark_blue_not_kept_documented_caveat(self):
+        """Documented caveat (ADR 0004 D2): (0, 0, 8) sits on the blue axis
+        (d == 0) but its chroma (8) is below HEX_MIN_CHROMA — on a dark board
+        it is indistinguishable from the background, so it is deliberately
+        not excluded."""
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, self.BLUE_AXIS)
+        assert not mask[1, 2]
+
+    def test_white_never_masked_even_as_point_target(self):
+        """White has chroma 0: even an exact match to a white point spec is
+        not excluded (the guard applies to all specs)."""
+        img = self.labelled_image()
+        white_point = (((255, 255, 255), (255, 255, 255)),)
+        mask = processing.hex_keep_mask(img, white_point)
+        assert not mask[1, 3]
+
+    def test_union_over_segments(self):
+        img = self.labelled_image()
+        mask = processing.hex_keep_mask(img, self.RED_POINT + self.BLUE_AXIS)
+        assert mask[0, 0] and mask[1, 0]  # OR over both specs
+
+    def test_segments_are_user_facing_rgb(self):
+        """Regression guard for the RGB -> BGR endpoint swap: BGR (255,0,0)
+        (i.e. RGB 0000FF, pure blue) must be kept by the 0000FF point spec,
+        not by FF0000."""
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        img[0, 0] = (255, 0, 0)  # BGR -> RGB 0000FF
+        blue_point = (((0, 0, 255), (0, 0, 255)),)
+        red_point = (((255, 0, 0), (255, 0, 0)),)
+        assert processing.hex_keep_mask(img, blue_point)[0, 0]
+        assert not processing.hex_keep_mask(img, red_point)[0, 0]
+
+    def test_rejects_bad_array(self):
+        segs = self.RED_POINT
+        with pytest.raises(processing.SmartboardError):
+            processing.hex_keep_mask(np.zeros((4, 4, 3), dtype=np.float32), segs)
+        with pytest.raises(processing.SmartboardError):
+            processing.hex_keep_mask(np.zeros((4, 4), dtype=np.uint8), segs)
+        with pytest.raises(processing.SmartboardError):
+            processing.hex_keep_mask(np.zeros((4, 4, 4), dtype=np.uint8), segs)
+        with pytest.raises(processing.SmartboardError):
+            processing.hex_keep_mask(None, segs)
+
+    @pytest.mark.parametrize("bad_segments", [None, 42, (((256, 0, 0), (0, 0, 0)),)])
+    def test_rejects_invalid_segments(self, bad_segments):
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        with pytest.raises(processing.SmartboardError):
+            processing.hex_keep_mask(img, bad_segments)
+
+
+class TestKeepHexPriority:
+    """ADR 0004, D3: hex exclusions union with keep_colors, are computed on
+    the *original*, and take precedence over complement and remap.  An empty
+    keep_segments must be bit-identical to the v0.5.0 behaviour."""
+
+    @staticmethod
+    def board_with_blue_block():
+        # gray board with an 8x8 pure blue marker (RGB 0000FF == BGR (255,0,0))
+        img = np.full((64, 64, 3), (80, 80, 80), dtype=np.uint8)
+        img[28:36, 28:36] = (255, 0, 0)
+        return img
+
+    BLUE_AXIS = (((0, 0, 1), (0, 0, 255)),)
+
+    def test_kept_hex_beats_remap(self):
+        img = self.board_with_blue_block()
+        out = processing.invert_or_remap(
+            img, bg_target=(255, 255, 255), keep_segments=self.BLUE_AXIS
+        )
+        # the blue marker keeps its original values (BGR (255,0,0))
+        assert (out[28:36, 28:36] == np.array((255, 0, 0), dtype=np.uint8)).all()
+        # the gray background (p25 = 80) lands exactly on the target
+        assert (out[0, 0] == 255).all()
+
+    def test_kept_hex_beats_complement(self):
+        img = self.board_with_blue_block()
+        out = processing.invert_or_remap(
+            img, bg_target=None, keep_segments=self.BLUE_AXIS
+        )
+        blue = np.zeros((64, 64), dtype=bool)
+        blue[28:36, 28:36] = True
+        assert (out[blue] == img[blue]).all()  # kept pixels == original
+        assert (out[~blue] == np.bitwise_not(img[~blue])).all()  # rest: 255 - v
+
+    def test_exclusion_mask_uses_original_not_region(self):
+        original = np.full((16, 16, 3), (80, 80, 80), dtype=np.uint8)
+        original[6:10, 6:10] = (255, 0, 0)  # blue in the original
+        region = original.copy()
+        region[6:10, 6:10] = (10, 10, 10)  # "pre-processed" away in region
+        out = processing.invert_or_remap(
+            region, original, bg_target=(255, 255, 255), keep_segments=self.BLUE_AXIS
+        )
+        assert (out[6:10, 6:10] == np.array((255, 0, 0), dtype=np.uint8)).all()
+
+    def test_union_with_keep_colors(self):
+        img = self.board_with_blue_block()
+        img[44:52, 44:52] = (0, 0, 255)  # red marker block (BGR)
+        out = processing.invert_or_remap(
+            img,
+            bg_target=(255, 255, 255),
+            keep_colors=frozenset({"red"}),
+            keep_segments=self.BLUE_AXIS,
+        )
+        assert (out[28:36, 28:36] == np.array((255, 0, 0), dtype=np.uint8)).all()
+        assert (out[44:52, 44:52] == np.array((0, 0, 255), dtype=np.uint8)).all()
+
+    def test_empty_segments_bit_identical_to_default(self):
+        """Regression: keep_segments=() must change nothing (v0.5.0)."""
+        img = self.board_with_blue_block()
+        base = processing.invert_or_remap(img, bg_target=(255, 255, 255))
+        with_hex = processing.invert_or_remap(
+            img, bg_target=(255, 255, 255), keep_segments=()
+        )
+        assert np.array_equal(base, with_hex)
+        base_comp = processing.invert_or_remap(img)
+        with_hex_comp = processing.invert_or_remap(img, keep_segments=())
+        assert np.array_equal(base_comp, with_hex_comp)
+
+    def test_invalid_segments_raise(self):
+        img = self.board_with_blue_block()
+        with pytest.raises(processing.SmartboardError):
+            processing.invert_or_remap(img, keep_segments=None)
+        with pytest.raises(processing.SmartboardError):
+            processing.invert_or_remap(img, keep_segments=(((256, 0, 0), (0, 0, 0)),))

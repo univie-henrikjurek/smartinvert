@@ -5,15 +5,20 @@ Public functions:
 1. ``pdf_to_images`` – rasterises each page of a PDF to a NumPy ``ndarray``.
 2. ``color_mask`` – boolean mask of pixels matching the requested marker
    colours (BGR, see :data:`KEEPABLE_COLORS`).
-3. ``invert_or_remap`` – the single in-region pixel operation: strict
+3. ``hex_keep_mask`` – boolean mask of pixels excluded via explicit hex
+   colours / ranges (user-facing RGB, see ADR 0004).
+4. ``validate_bg_target`` / ``validate_keep_segments`` – central validation
+   choke points for the public API options.
+5. ``invert_or_remap`` – the single in-region pixel operation: strict
    ``255 − v`` (default) or a linear per-channel remap onto a target
-   background colour, with optional exclusion of marker colours.
-4. ``invert_region`` – applies the in-region pixel operation inside a
+   background colour, with optional exclusion of marker colours and hex
+   specs.
+6. ``invert_region`` – applies the in-region pixel operation inside a
    rectangle (strict ``255 − v`` by default).
-5. ``enhance_image`` / ``enhance_image_ex`` – detect the smartboard area
+7. ``enhance_image`` / ``enhance_image_ex`` – detect the smartboard area
    (via :mod:`smartboard_invert.detection`) and apply (optional CLAHE /
    cleaning /) inversion or target-background remap **only inside** it.
-6. ``images_to_pdf`` – assembles a list of processed images into a PDF (pages
+8. ``images_to_pdf`` – assembles a list of processed images into a PDF (pages
    sized to the images; used by the GUI preview and legacy flows – the main
    pipeline lives in :mod:`smartboard_invert.pdfpipeline`).
 
@@ -52,6 +57,25 @@ COLOR_DELTA: int = 40
 #: Minimum value of the dominant channel (well above dark board noise ≤ 60,
 #: well below saturated markers ≥ 150).
 COLOR_MIN: int = 80
+
+#: Maximum euclidean distance in RGB space between a pixel and a hex
+#: segment/point for the pixel to be excluded from the transformation
+#: (ADR 0004, D2).  Above scan/render noise, below the distance to any
+#: other marker colour.
+HEX_TOL: float = 50.0
+
+#: Minimum pixel chroma (``max(channel) − min(channel)``) for a pixel to be
+#: excluded via a hex spec (ADR 0004, D2).  Keeps neutral grays — in
+#: particular the dark board background — out of ranges that start near the
+#: RGB origin (e.g. ``000001-0000FF``).
+HEX_MIN_CHROMA: int = 24
+
+#: A single user-facing RGB colour (ints 0–255).
+RGBTriple = Tuple[int, int, int]
+#: One ``--keep-hex`` spec: a segment ``((r1, g1, b1), (r2, g2, b2))`` in
+#: user-facing **RGB** order; ``a == b`` denotes a single colour.  A keep
+#: list is a ``Tuple[HexSegment, ...]`` (empty = feature off).
+HexSegment = Tuple[RGBTriple, RGBTriple]
 
 
 class SmartboardError(Exception):
@@ -173,6 +197,127 @@ def color_mask(region: np.ndarray, colors: AbstractSet[str]) -> np.ndarray:
     return mask
 
 
+def hex_keep_mask(region: np.ndarray, segments: "Tuple[HexSegment, ...]") -> np.ndarray:
+    """Boolean mask of the pixels in *region* excluded by the hex specs.
+
+    A pixel is excluded (i.e. it keeps its original values during the
+    transformation) when **both** hold (ADR 0004, D2):
+
+    1. **Distance** — its euclidean distance to the segment ``[a, b]`` in
+       RGB space is ≤ :data:`HEX_TOL` (``a == b``: distance to the point).
+    2. **Chroma guard** — ``max(channel) − min(channel)`` is ≥
+       :data:`HEX_MIN_CHROMA`.  This keeps neutral grays — in particular the
+       dark board background — out of ranges that start near the RGB origin
+       (e.g. ``000001-0000FF``).  Documented caveat: nearly invisible
+       extreme values (e.g. RGB ``(0, 0, 8)``, chroma 8 < 24) are
+       deliberately **not** excluded, and neutral gray "marker" ranges are
+       not supported.
+
+    The result is the OR over all segments.
+
+    Parameters
+    ----------
+    region:
+        ``uint8`` BGR image (3 channels; internally channel 0 = B, 1 = G,
+        2 = R).
+    segments:
+        ``--keep-hex`` specs as validated by
+        :func:`validate_keep_segments`: pairs of user-facing **RGB**
+        endpoints (``a == b`` = single colour).  The endpoints are swapped
+        to BGR internally — the distance math itself is channel-agnostic.
+        Empty = all-False mask (feature off).
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask of shape ``(H, W)``.
+    """
+    if region is None or not isinstance(region, np.ndarray) or region.dtype != np.uint8:
+        raise SmartboardError("hex_keep_mask expects a uint8 ndarray")
+    if region.ndim != 3 or region.shape[2] != 3:
+        raise SmartboardError("hex_keep_mask expects a BGR image with 3 channels")
+    segments = validate_keep_segments(segments)
+    mask = np.zeros(region.shape[:2], dtype=bool)
+    if not segments:
+        return mask
+    # Internal arrays are BGR; the user-facing specs are RGB.  Swap the
+    # endpoint channel order so the distance math below is channel-agnostic.
+    p = region.astype(np.float32)
+    tol2 = HEX_TOL * HEX_TOL
+    for a, b in segments:
+        a_bgr = np.array([a[2], a[1], a[0]], dtype=np.float32)
+        b_bgr = np.array([b[2], b[1], b[0]], dtype=np.float32)
+        d = b_bgr - a_bgr
+        len2 = float(d @ d)
+        if len2 == 0.0:
+            # Single colour: euclidean distance to the point.
+            diff = p - a_bgr
+        else:
+            # Closest point of the segment [a, b] to each pixel.
+            t = np.clip(((p - a_bgr) * d).sum(axis=2) / len2, 0.0, 1.0)
+            diff = p - (a_bgr + t[..., None] * d)
+        mask |= (diff * diff).sum(axis=2) <= tol2
+    # Chroma guard on the union (int16 to avoid uint8 wrap-around).
+    chroma = region.max(axis=2).astype(np.int16) - region.min(axis=2).astype(np.int16)
+    mask &= chroma >= HEX_MIN_CHROMA
+    return mask
+
+
+def validate_keep_segments(segments: "Tuple[HexSegment, ...] | None") -> "Tuple[HexSegment, ...]":
+    """Validate hex keep-specs and return them as normalized tuples.
+
+    Central choke point (analogous to :func:`validate_bg_target`) for the
+    public API and ``process_pdf``.  Each entry must be a pair of RGB
+    endpoints ``((r1, g1, b1), (r2, g2, b2))`` — tuples or lists — with all
+    channels ints 0–255 (booleans rejected); ``a == b`` denotes a single
+    colour.  ``None`` is rejected (use an empty tuple for "no hex specs").
+    The endpoint order within a pair and the order of the pairs are
+    preserved as given (endpoint order is semantically irrelevant for
+    matching).
+    """
+    if segments is None:
+        raise SmartboardError(
+            "keep_segments must be a tuple of (a, b) RGB endpoint pairs — "
+            "use an empty tuple for 'no hex specs', not None"
+        )
+    try:
+        raw = list(segments)
+    except TypeError:
+        raise SmartboardError(
+            "keep_segments must be an iterable of (a, b) RGB endpoint pairs "
+            f"(got {type(segments).__name__})"
+        )
+    normalized: List[HexSegment] = []
+    for idx, pair in enumerate(raw):
+        try:
+            length = len(pair)
+        except TypeError:
+            length = -1  # not indexable at all (e.g. an int)
+        if length != 2:
+            raise SmartboardError(
+                f"keep_segments[{idx}] must be a pair of RGB endpoints "
+                f"((r1, g1, b1), (r2, g2, b2)), got {pair!r}"
+            )
+        endpoints = [pair[0], pair[1]]
+        channel_tuples: List[Tuple[int, int, int]] = []
+        for endpoint in endpoints:
+            try:
+                channels = tuple(endpoint)
+            except TypeError:
+                channels = ()
+            if len(channels) != 3 or any(
+                isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 255
+                for v in channels
+            ):
+                raise SmartboardError(
+                    f"keep_segments[{idx}] has an invalid RGB endpoint "
+                    f"{endpoint!r}: expected a 3-tuple of ints 0-255"
+                )
+            channel_tuples.append(channels)
+        normalized.append((channel_tuples[0], channel_tuples[1]))
+    return tuple(normalized)
+
+
 def validate_bg_target(bg_target: Optional[Tuple[int, int, int]]) -> Optional[Tuple[int, int, int]]:
     """Validate a user-facing ``bg_target`` and return it as a normalized tuple.
 
@@ -204,6 +349,7 @@ def invert_or_remap(
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
+    keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> np.ndarray:
     """Apply the in-region pixel operation to *region* (see ADR 0002, D1/D2).
 
@@ -219,9 +365,14 @@ def invert_or_remap(
       T_c`` (the board background lands exactly on the target colour) and
       ``v = 255 → 0`` (white stays black).
     * ``keep_colors`` → pixels matching any of the requested marker colours
-      keep their **original** values.  The exclusion mask is computed on
-      *original* (default: *region*, i.e. before any pre-processing) and
-      applied **last** — it takes precedence over both complement and remap.
+      keep their **original** values.
+    * ``keep_segments`` → pixels matching any of the explicit hex colours /
+      ranges (see :func:`hex_keep_mask`, ADR 0004) keep their **original**
+      values.
+      The exclusion mask is the union of both, computed on *original*
+      (default: *region*, i.e. before any pre-processing) and applied
+      **last** — it takes precedence over both complement and remap.  An
+      empty ``keep_segments`` (the default) adds no overhead.
 
     Parameters
     ----------
@@ -236,6 +387,10 @@ def invert_or_remap(
         strict ``255 − v`` complement.
     keep_colors:
         Subset of :data:`KEEPABLE_COLORS` to exclude from the transformation.
+    keep_segments:
+        Explicit hex colours / ranges (pairs of user-facing RGB endpoints,
+        see :func:`hex_keep_mask`) to exclude from the transformation.
+        Default empty = v0.5.0 behaviour (bit-identical).
 
     Returns
     -------
@@ -257,6 +412,9 @@ def invert_or_remap(
             "original must be a uint8 BGR ndarray with the same shape as region"
         )
     bg_target = validate_bg_target(bg_target)
+    # Normalize/validate up front (analogous to bg_target): this also makes
+    # invalid specs (incl. None) fail fast in the public API.
+    keep_segments = validate_keep_segments(keep_segments)
     if bg_target is None:
         # The legacy path: bitwise_not on uint8 is exactly 255 − v (no
         # overflow, no rounding) and must stay bit-identical to v0.4.1.
@@ -272,10 +430,14 @@ def invert_or_remap(
         transformed = np.clip(
             np.floor((255.0 - region.astype(np.float32)) * scale + 0.5), 0, 255
         ).astype(np.uint8)
-    if keep_colors:
-        # Exclusion is the LAST step: kept marker pixels get their original
-        # values, taking precedence over complement and remap.
-        m = color_mask(orig, keep_colors)
+    if keep_colors or keep_segments:
+        # Exclusion is the LAST step: kept pixels get their original values,
+        # taking precedence over complement and remap.
+        m = np.zeros(region.shape[:2], dtype=bool)
+        if keep_colors:
+            m |= color_mask(orig, keep_colors)
+        if keep_segments:
+            m |= hex_keep_mask(orig, keep_segments)
         transformed = np.where(m[..., None], orig, transformed)
     return transformed
 
@@ -287,6 +449,7 @@ def invert_region(
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
+    keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> np.ndarray:
     """Return a copy of *img* with only the pixels inside *rect* transformed.
 
@@ -312,6 +475,9 @@ def invert_region(
     keep_colors:
         Marker colours to exclude from the transformation (see
         :func:`invert_or_remap`).
+    keep_segments:
+        Explicit hex colours / ranges to exclude from the transformation
+        (see :func:`invert_or_remap`).
     """
     if img is None or not isinstance(img, np.ndarray) or img.dtype != np.uint8:
         raise SmartboardError("invert_region expects a uint8 ndarray")
@@ -326,7 +492,10 @@ def invert_region(
     if x1 > x0 and y1 > y0:
         # original == region here (no pre-processing), so no `original` needed
         out[y0:y1, x0:x1] = invert_or_remap(
-            out[y0:y1, x0:x1], bg_target=bg_target, keep_colors=keep_colors
+            out[y0:y1, x0:x1],
+            bg_target=bg_target,
+            keep_colors=keep_colors,
+            keep_segments=keep_segments,
         )
     return out
 
@@ -356,6 +525,7 @@ def enhance_image_ex(
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
+    keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> Tuple[np.ndarray, DetectionResult]:
     """Detect the smartboard area and enhance **only that region**.
 
@@ -378,6 +548,9 @@ def enhance_image_ex(
     keep_colors:
         Marker colours to exclude from the transformation (their original
         pixels are kept; see :func:`invert_or_remap`).
+    keep_segments:
+        Explicit hex colours / ranges to exclude from the transformation
+        (their original pixels are kept; see :func:`invert_or_remap`).
 
     Returns
     -------
@@ -411,6 +584,7 @@ def enhance_image_ex(
             original=region_orig,
             bg_target=bg_target,
             keep_colors=keep_colors,
+            keep_segments=keep_segments,
         )
         logger.debug("Inverted colours inside detected region %s", detection.rect)
     result[y0:y1, x0:x1] = region
@@ -425,6 +599,7 @@ def enhance_image(
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
+    keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> np.ndarray:
     """Convenience wrapper around :func:`enhance_image_ex` (image only)."""
     result, _ = enhance_image_ex(
@@ -434,6 +609,7 @@ def enhance_image(
         clean=clean,
         bg_target=bg_target,
         keep_colors=keep_colors,
+        keep_segments=keep_segments,
     )
     return result
 

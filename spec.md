@@ -160,6 +160,7 @@ Möglichkeit, Markerfarben (z. B. rot/grün für Weggestrichenes/Angehaktes)
 |---|-------------|--------------|
 | **P3‑FR‑9** | Ziel-Hintergrundfarbe (`--bg-target`) | Default `complement` = strikt `255 − v` (bit-identisch zu v0.4.1). `R,G,B` (jeweils 0–255): lineares pro-Kanal-Remap `v' = T_c·(255−v)/(255−B_c)`; `B_c` = p25 des Kanals im Remap-Input (nach optionalem CLAHE/clean), geclampt auf `[0, 220]` (Nenner ≥ 35); float32, round-half-up, clip 0–255. Anker: `v = B_c → T_c` (Board-Hintergrund landet exakt auf der Zielfarbe), `v = 255 → 0` (Weiß bleibt Schwarz). |
 | **P3‑FR‑10** | Erhaltene Markerfarben (`--keep-colors`) | Pixel passender Markerfarben behalten ihre **Originalwerte** – Exklusion wird auf dem Original (vor CLAHE/clean/Inversion) berechnet und hat **Vorrang** vor Complement und Remap (letzter Schritt). Maske: Kanaldominanz Δ = 40 und dominanter Kanal ≥ 80 (yellow: R, G ≥ 80, beide > B + 40); OR über die angefragten Farben aus red,green,blue,yellow (unbekannt → Fehler). Default `red,green`; `none` = alles invertieren (v0.4.1-Verhalten). |
+| **P3‑FR‑11** | Hex-Farben und -bereiche (`--keep-hex`, GUI-Textfeld) | Freie Angabe weiterer von der Transformation ausgenommener Farben (Zusatz zu `--keep-colors`, ADR 0004): Kommalist, pro Eintrag `RRGGBB` (Punkt; `#`-Prefix und 3-stellige Kurzform erlaubt) oder `RRGGBB-RRGGBB` (Bereich; Endpunkte in beliebiger Reihenfolge, aufsteigend normalisiert). Ein Pixel ist exkludiert, wenn der euklidische Abstand zur **Strecke** zwischen den Endpunkten ≤ 50 ist (Punkt: Abstand zum Punkt) **und** der Chroma-Guard (max−min der Kanäle ≥ 24) erfüllt ist. Union mit der `--keep-colors`-Maske, letzter Schritt auf dem Original (Vorrang wie P3‑FR‑10). Leer (Default) = aus, Verhalten bit-identisch zu v0.5.0. Beispiel: `FF0000, 00FF00, 000001-0000FF` = exakt Rot, exakt Grün, ganze blaue Achse vom dunkelsten bis zum hellsten Blau. |
 
 ### 3.2 Abweichungen (dokumentiert)
 
@@ -167,11 +168,13 @@ Möglichkeit, Markerfarben (z. B. rot/grün für Weggestrichenes/Angehaktes)
 |---|------------|------------|
 | **P3‑D‑1** | **Bewusster Default-Wechsel (breaking):** Default ist jetzt `complement` + `red,green`, d. h. ≠ v0.4.1 (dort: reine `255 − v`, keine Farben erhalten) | User-Entscheidung: sehr dunkle Boards sollen nicht „beige“ wirken (Remap-Option) und rot/grüne Marker (Weggestrichenes, Angehaktes) sollen lesbar bleiben. Exaktes v0.4.1-Verhalten bleibt reproduzierbar und als Regression gesichert: `smartinvert -i in.pdf -o out.pdf --bg-target complement --keep-colors none` → bit-exact `np.bitwise_not`. |
 | **P3‑D‑2** | Neue Config-Keys `bg_target` / `keep_colors` (String, CLI-Syntax: `"complement"` bzw. `"R,G,B"`; `"none"` bzw. Kommasetz aus red,green,blue,yellow) in `REAL_DEFAULTS` + `_CONFIG_TYPES` | Zentrale Parser `parse_bg_target`/`parse_keep_colors` in `cli.py` als einziger Chokepoint für CLI-Flag und JSON-Config; `process_pdf`/`enhance_image[_ex]`/`invert_region` erhalten die Optionen als Keyword-Parameter (Default = v0.4.1-Verhalten). |
+| **P3‑D‑3** | Neues Flag `--keep-hex` + Config-Key `keep_hex` (String, CLI-Syntax; `""` = aus) und GUI-Textfeld (Default leer, wird nach einem Run nicht geleert) als **orthogonales** Option zu `--keep-colors` (ADR 0004) | Namens-Farben bleiben die grobe Heuristik (Dominanz-Maske); explizite Hex-Spezifikationen geben exakte Kontrolle (Nutzerfall: exakt Rot, exakt Grün, ganze blaue Achse `000001-0000FF`). Parser `parse_keep_hex` in `cli.py` (Chokepoint; Regex über ASCII-Hex, Unicode-Ziffern ausgeschlossen); zentrale Validierung `validate_keep_segments` in `processing.py`; `process_pdf`/`enhance_image[_ex]`/`invert_region` erhalten `keep_segments` als Keyword-Parameter. Bewusste Einschränkung (dokumentiert, ADR 0004 D2): der Chroma-Guard (≥ 24) schließt neutrale Grautöne — v. a. den dunklen Board-Hintergrund — aus; Graubereiche werden dadurch nicht unterstützt. |
 
 Hinweis: Die Annahme **A‑2** („binary/negative output, no colour preservation“)
 ist damit **teilweise ersetzt** — selektive Farb-Erhaltung ist Teil des neuen
 Default-Verhaltens. Blue/yellow und freie `R,G,B`-Ziele bleiben CLI-only; die
-GUI bietet Combobox (Complement/Reinweiß) + Checkboxen „Rot/Grün erhalten“.
+GUI bietet Combobox (Complement/Reinweiß) + Checkboxen „Rot/Grün erhalten“ +
+Textfeld „Zusätzliche Hex-Farben“ (P3‑FR‑11).
 
 ---
 

@@ -19,13 +19,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from . import __version__
 from .pdfpipeline import process_pdf
-from .processing import KEEPABLE_COLORS, SmartboardError
+from .processing import HexSegment, KEEPABLE_COLORS, SmartboardError
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +34,9 @@ logger = logging.getLogger(__name__)
 #: ``output`` stays ``None``: for a *directory* input the default output
 #: directory is "outputs" (same file names), for a *single file* input the
 #: legacy default "<stem>_inverted.pdf" next to the input is used.
-#: ``bg_target``/``keep_colors`` are stored in CLI syntax and parsed by
-#: :func:`parse_bg_target`/:func:`parse_keep_colors` (single choke point for
-#: flags and config).
+#: ``bg_target``/``keep_colors``/``keep_hex`` are stored in CLI syntax and
+#: parsed by :func:`parse_bg_target`/:func:`parse_keep_colors` /
+#: :func:`parse_keep_hex` (single choke point for flags and config).
 REAL_DEFAULTS: Dict[str, Any] = {
     "input": "inputs",
     "output": None,
@@ -47,6 +48,7 @@ REAL_DEFAULTS: Dict[str, Any] = {
     "debug": False,
     "bg_target": "complement",
     "keep_colors": "red,green",
+    "keep_hex": "",
 }
 
 
@@ -156,6 +158,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--keep-hex",
+        dest="keep_hex",
+        default=None,
+        help=(
+            "Zusätzliche Farben/Farbbereiche (Hex) die unverändert bleiben, "
+            "kommasepariert, z.B. 'FF0000, 00FF00, 000001-0000FF'. "
+            "Leer = aus (Default)."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         default=None,
@@ -237,6 +249,59 @@ def parse_keep_colors(value: str) -> FrozenSet[str]:
     return colors
 
 
+#: One ``--keep-hex`` token: optional single leading ``#``, a 6- or 3-digit
+#: hex colour, optionally followed by ``-`` and a second (range) endpoint.
+#: The explicit ``[0-9A-Fa-f]`` classes also rule out Unicode digits.
+_HEX3 = r"[0-9A-Fa-f]{3}"
+_HEX6 = r"[0-9A-Fa-f]{6}"
+_KEEP_HEX_TOKEN = re.compile(rf"^#?({_HEX6}|{_HEX3})(?:-({_HEX6}|{_HEX3}))?$")
+
+
+def parse_keep_hex(value: str) -> Tuple[HexSegment, ...]:
+    """Parse a ``--keep-hex`` flag / config value (single choke point).
+
+    Empty string → ``()`` (feature off).  Otherwise a comma-separated list
+    of colour specs (whitespace-tolerant, empty entries ignored):
+
+    * ``RRGGBB`` — a single colour (``#`` prefix allowed),
+    * ``RGB`` — 3-digit shorthand (each digit doubled, ``F00`` → ``FF0000``),
+    * ``RRGGBB-RRGGBB`` (or shorthand endpoints) — a colour range; the
+      endpoints are normalized to ascending order (they may be given in
+      either order).
+
+    The result is a tuple of user-facing RGB endpoint pairs (see
+    :class:`~smartboard_invert.processing.HexSegment`).  Anything else
+    raises :class:`SmartboardError`.
+    """
+    text = str(value).strip()
+    if not text:
+        return ()
+    segments: List[HexSegment] = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        match = _KEEP_HEX_TOKEN.match(token)
+        if match is None:
+            raise SmartboardError(
+                f"invalid --keep-hex '{value}': expected 'RRGGBB' or "
+                f"'RRGGBB-RRGGBB' (comma-separated; optional '#' prefix; "
+                f"3-digit shorthand allowed)"
+            )
+        first, second = match.group(1), match.group(2)
+        endpoints = [first, second] if second is not None else [first, first]
+        values: List[Tuple[int, int, int]] = []
+        for part in endpoints:
+            if len(part) == 3:
+                part = "".join(ch * 2 for ch in part)
+            packed = int(part, 16)  # ASCII-only by the regex above
+            values.append(((packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF))
+        if values[0] > values[1]:  # normalize: ascending endpoint order
+            values.reverse()
+        segments.append((values[0], values[1]))
+    return tuple(segments)
+
+
 #: Allowed config keys with their expected types (``null``/missing = default).
 _CONFIG_TYPES: Dict[str, Any] = {
     "input": str,
@@ -249,6 +314,7 @@ _CONFIG_TYPES: Dict[str, Any] = {
     "debug": bool,
     "bg_target": str,
     "keep_colors": str,
+    "keep_hex": str,
 }
 
 
@@ -291,6 +357,7 @@ def resolve_options(args: argparse.Namespace, config: dict) -> dict:
         "debug",
         "bg_target",
         "keep_colors",
+        "keep_hex",
     ):
         value = getattr(args, name)
         if value is None:
@@ -367,6 +434,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         keep_colors = parse_keep_colors(
             opts["keep_colors"] if opts["keep_colors"] is not None else REAL_DEFAULTS["keep_colors"]
         )
+        keep_hex = parse_keep_hex(
+            opts["keep_hex"] if opts["keep_hex"] is not None else REAL_DEFAULTS["keep_hex"]
+        )
     except SmartboardError as e:
         print(f"[ERROR] {e}", file=sys.stderr)
         return 1
@@ -403,6 +473,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 debug_dir=debug_dir,
                 bg_target=bg_target,
                 keep_colors=keep_colors,
+                keep_segments=keep_hex,
             )
             logger.info("Done: %s", result.summary())
         except SmartboardError as exc:
