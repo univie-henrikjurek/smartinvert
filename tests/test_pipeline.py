@@ -487,9 +487,9 @@ def test_image_replace_failure_falls_back_to_rerasterize(tmp_path, monkeypatch):
 
 
 def test_invert_disabled_copies_page(tmp_path):
-    """With every transformation disabled the detected page is copied as-is."""
+    """With the transformation disabled the detected page is copied as-is."""
     pages = [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}]
-    src, dst, truths, result = process(tmp_path, pages, invert=False, apply_clahe=False, clean=False)
+    src, dst, truths, result = process(tmp_path, pages, invert=False)
     page = result.pages[0]
     assert page.detected
     assert page.method == "copy"
@@ -662,7 +662,7 @@ class TestCropPixelEquivalence:
         pages = [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}]
         src = tmp_path / "in.pdf"
         make_pdf(src, pages)
-        no_transform = dict(invert=False, apply_clahe=False, clean=False)
+        no_transform = dict(invert=False)
         res_crop = process_pdf(src, tmp_path / "crop.pdf", dpi=DPI, crop=True, **no_transform)
         process_pdf(src, tmp_path / "faithful.pdf", dpi=DPI, crop=False, **no_transform)
         pr = res_crop.pages[0]

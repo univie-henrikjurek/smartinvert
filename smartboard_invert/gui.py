@@ -4,12 +4,12 @@ The GUI mirrors the CLI options but presents them in a graphical form:
 
 * File chooser for the input PDF.
 * DPI slider (50‑300).
-* Checkboxes for *Invert*, *CLAHE*, *Noise cleaning* and *Crop to board*.
-* *Target background* combobox (complement or pure white) and checkboxes to
-  keep the red/green marker colours un-inverted.
+* Checkboxes for *Invert* and *Crop to board* (ADR 0005: the legacy CLAHE /
+  noise-cleaning / red / green checkboxes were removed).
+* *Target background* combobox (complement or pure white).
 * *Zusätzliche Hex-Farben* entry: explicit hex colours / ranges (e.g.
-  ``FF0000, 00FF00, 000001-0000FF``) that are left un-inverted as well
-  (ADR 0004).
+  ``FF0000, 00FF00, 000001-0000FF``) left un-inverted, in addition to the
+  fixed red/green default (ADR 0004 / ADR 0005).
 * A *Preview* button that shows the first page before/after processing.
 * A *Run* button that processes the entire document and displays a progress bar.
 
@@ -52,12 +52,16 @@ logger = logging.getLogger(__name__)
 #: index 1 = pure white).
 BG_TARGET_CHOICES = ("Complement (255 − v)", "Reinweiß (255,255,255)")
 
+#: Marker colours the GUI always keeps un-inverted (fixed default, ADR 0005
+#: D2 — the former "Rot/Grün erhalten" checkboxes were removed as redundant).
+GUI_KEEP_COLORS = frozenset({"red", "green"})
+
 
 class SmartboardGUI:
     def __init__(self, master: Tk):
         self.master = master
         master.title("Smartboard PDF Inverter")
-        master.geometry("660x830")
+        master.geometry("660x700")
         self.create_widgets()
         # Thread-safe event queue: worker threads must never touch Tk
         # widgets directly (tkinter is not thread-safe); they enqueue
@@ -106,17 +110,14 @@ class SmartboardGUI:
         self.dpi_slider.grid(row=0, column=1, sticky="ew", padx=5)
         self.dpi_value.grid(row=0, column=2, sticky="w", padx=(4, 0))
         opts_frame.columnconfigure(1, weight=1)
-        # Checkboxes
+        # Checkboxes (ADR 0005: CLAHE / noise cleaning / red / green
+        # checkboxes removed – the hex field is the colour fine control)
         self.invert_var = IntVar(value=1)
         Checkbutton(opts_frame, text="Invert colours", variable=self.invert_var).grid(row=1, column=0, columnspan=2, sticky="w")
-        self.clahe_var = IntVar(value=0)
-        Checkbutton(opts_frame, text="Apply CLAHE (legacy)", variable=self.clahe_var).grid(row=2, column=0, columnspan=2, sticky="w")
-        self.clean_var = IntVar(value=0)
-        Checkbutton(opts_frame, text="Noise cleaning (legacy)", variable=self.clean_var).grid(row=3, column=0, columnspan=2, sticky="w")
         self.crop_var = IntVar(value=0)
-        Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=4, column=0, columnspan=2, sticky="w")
-        # Target background + kept marker colours (v0.5.0)
-        Label(opts_frame, text="Zielhintergrund:").grid(row=5, column=0, sticky="w")
+        Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=2, column=0, columnspan=2, sticky="w")
+        # Target background (v0.5.0)
+        Label(opts_frame, text="Zielhintergrund:").grid(row=3, column=0, sticky="w")
         self.bg_var = StringVar(value=BG_TARGET_CHOICES[0])
         # readonly by design; _reset_ui() restores the state after the
         # generic enable/disable walk of _set_controls_state()
@@ -127,21 +128,17 @@ class SmartboardGUI:
             state="readonly",
             width=28,
         )
-        self.bg_combo.grid(row=5, column=1, columnspan=2, sticky="w", padx=5)
-        self.keep_red_var = IntVar(value=1)
-        Checkbutton(opts_frame, text="Rot erhalten", variable=self.keep_red_var).grid(row=6, column=0, columnspan=2, sticky="w")
-        self.keep_green_var = IntVar(value=1)
-        Checkbutton(opts_frame, text="Grün erhalten", variable=self.keep_green_var).grid(row=7, column=0, columnspan=2, sticky="w")
+        self.bg_combo.grid(row=3, column=1, columnspan=2, sticky="w", padx=5)
         # Explicit hex colours / ranges left un-inverted (ADR 0004); empty =
         # off.  Parsed in the main thread before the worker starts (see
         # _parse_keep_hex); the field is intentionally NOT cleared after a run.
-        Label(opts_frame, text="Zusätzliche Hex-Farben:").grid(row=8, column=0, sticky="w")
+        Label(opts_frame, text="Zusätzliche Hex-Farben:").grid(row=4, column=0, sticky="w")
         self.keep_hex_entry = Entry(opts_frame, width=44)
-        self.keep_hex_entry.grid(row=8, column=1, columnspan=2, sticky="w", padx=5)
+        self.keep_hex_entry.grid(row=4, column=1, columnspan=2, sticky="w", padx=5)
         Label(
             opts_frame,
-            text="(z.B. FF0000, 00FF00, 000001-0000FF — leer = aus)",
-        ).grid(row=9, column=0, columnspan=3, sticky="w")
+            text="(z.B. FF0000, 00FF00, 000001-0000FF — leer = aus; rot/grün bleiben immer erhalten)",
+        ).grid(row=5, column=0, columnspan=3, sticky="w")
 
         # ---------- Preview ----------
         preview_frame = Frame(self.master)
@@ -166,14 +163,14 @@ class SmartboardGUI:
 
         Read in the calling (main) thread and handed over as plain values –
         the same rule the thread-safe event queue is built on.
+
+        ``keep_colors`` is fixed to the documented default ``{red, green}``
+        (ADR 0005, D2): the red/green checkboxes were removed as redundant —
+        the hex-keep entry is the fine control and unions with red/green.
         """
         return {
             "bg_target": None if self.bg_var.get() == BG_TARGET_CHOICES[0] else (255, 255, 255),
-            "keep_colors": frozenset(
-                name
-                for name, var in (("red", self.keep_red_var), ("green", self.keep_green_var))
-                if var.get()
-            ),
+            "keep_colors": GUI_KEEP_COLORS,
         }
 
     def _parse_keep_hex(self):
@@ -247,8 +244,6 @@ class SmartboardGUI:
             processed, det = processing.enhance_image_ex(
                 first,
                 invert=bool(self.invert_var.get()),
-                apply_clahe=bool(self.clahe_var.get()),
-                clean=bool(self.clean_var.get()),
                 bg_target=transform_options["bg_target"],
                 keep_colors=transform_options["keep_colors"],
                 keep_segments=keep_segments,
@@ -310,8 +305,6 @@ class SmartboardGUI:
         options = {
             "dpi": int(self.dpi_var.get()),
             "invert": bool(self.invert_var.get()),
-            "clahe": bool(self.clahe_var.get()),
-            "clean": bool(self.clean_var.get()),
             "crop": bool(self.crop_var.get()),
             "keep_segments": keep_segments,
             **self._transform_options(),
@@ -354,8 +347,6 @@ class SmartboardGUI:
                 out_path,
                 dpi=options["dpi"],
                 invert=options["invert"],
-                apply_clahe=options["clahe"],
-                clean=options["clean"],
                 crop=options["crop"],
                 bg_target=options.get("bg_target"),
                 keep_colors=options.get("keep_colors", frozenset()),

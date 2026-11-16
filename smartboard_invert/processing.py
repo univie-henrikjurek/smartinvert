@@ -16,8 +16,8 @@ Public functions:
 6. ``invert_region`` – applies the in-region pixel operation inside a
    rectangle (strict ``255 − v`` by default).
 7. ``enhance_image`` / ``enhance_image_ex`` – detect the smartboard area
-   (via :mod:`smartboard_invert.detection`) and apply (optional CLAHE /
-   cleaning /) inversion or target-background remap **only inside** it.
+   (via :mod:`smartboard_invert.detection`) and apply inversion or
+   target-background remap **only inside** it.
 8. ``images_to_pdf`` – assembles a list of processed images into a PDF (pages
    sized to the images; used by the GUI preview and legacy flows – the main
    pipeline lives in :mod:`smartboard_invert.pdfpipeline`).
@@ -359,11 +359,10 @@ def invert_or_remap(
       bit-identical to v0.4.1.
     * ``bg_target = (R, G, B)`` (user-facing **RGB**) → linear per-channel
       remap ``v' = T_c · (255 − v) / (255 − B_c)`` where ``B_c`` is the p25
-      of channel c in *region* (i.e. after any optional CLAHE/cleaning),
-      clamped to ``[0, 220]`` so the denominator stays ≥ 35.  Computed in
-      float32 with round-half-up, clipped to 0–255.  Anchors: ``v = B_c →
-      T_c`` (the board background lands exactly on the target colour) and
-      ``v = 255 → 0`` (white stays black).
+      of channel c in *region*, clamped to ``[0, 220]`` so the denominator
+      stays ≥ 35.  Computed in float32 with round-half-up, clipped to 0–255.
+      Anchors: ``v = B_c → T_c`` (the board background lands exactly on the
+      target colour) and ``v = 255 → 0`` (white stays black).
     * ``keep_colors`` → pixels matching any of the requested marker colours
       keep their **original** values.
     * ``keep_segments`` → pixels matching any of the explicit hex colours /
@@ -379,9 +378,8 @@ def invert_or_remap(
     region:
         ``uint8`` BGR image (3 channels) to transform.
     original:
-        Original (pre-CLAHE/clean) version of *region* used for the
-        keep-colour exclusion; must have the same shape (defaults to
-        *region*).
+        Original (pre-processed) version of *region* used for the keep
+        exclusions; must have the same shape (defaults to *region*).
     bg_target:
         Target background as ``(R, G, B)`` ints 0–255, or ``None`` for the
         strict ``255 − v`` complement.
@@ -500,28 +498,9 @@ def invert_region(
     return out
 
 
-def _process_region(region: np.ndarray, apply_clahe: bool, clean: bool) -> np.ndarray:
-    """Apply the optional (legacy) CLAHE / morphological cleaning to a region."""
-    region = region.copy()
-    if apply_clahe:
-        gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        gray = clahe.apply(gray)
-        region = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        logger.debug("Applied CLAHE inside detected region")
-    if clean:
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        region = cv2.morphologyEx(region, cv2.MORPH_OPEN, kernel, iterations=1)
-        region = cv2.morphologyEx(region, cv2.MORPH_CLOSE, kernel, iterations=1)
-        logger.debug("Applied morphological cleaning inside detected region")
-    return region
-
-
 def enhance_image_ex(
     img: np.ndarray,
     invert: bool = True,
-    apply_clahe: bool = False,
-    clean: bool = False,
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
@@ -529,10 +508,10 @@ def enhance_image_ex(
 ) -> Tuple[np.ndarray, DetectionResult]:
     """Detect the smartboard area and enhance **only that region**.
 
-    Pipeline: detect → (optional CLAHE) → (optional cleaning) → strict
-    ``255 − v`` inversion or target-background remap (:func:`invert_or_remap`)
-    – all limited to the detected rectangle.  When no unambiguous region is
-    found the image is returned unchanged (a warning is logged).
+    Pipeline: detect → strict ``255 − v`` inversion or target-background
+    remap (:func:`invert_or_remap`) — limited to the detected rectangle.
+    When no unambiguous region is found (or *invert* is off) the image is
+    returned unchanged (a warning is logged for a missing region).
 
     Parameters
     ----------
@@ -540,8 +519,6 @@ def enhance_image_ex(
         ``uint8`` BGR image (3 channels).
     invert:
         Apply the in-region transformation (default: on).
-    apply_clahe / clean:
-        Optional (legacy) pre-processing inside the region.
     bg_target:
         Target background ``(R, G, B)`` (0–255) for a linear per-channel
         remap, or ``None`` for the strict ``255 − v`` complement (default).
@@ -573,29 +550,20 @@ def enhance_image_ex(
 
     x0, y0, x1, y1 = detection.rect
     result = img.copy()
-    region = result[y0:y1, x0:x1]
-    # The keep-colour exclusion must be computed on the original (pre-CLAHE/
-    # clean) pixels.
-    region_orig = region.copy() if invert else None
-    region = _process_region(region, apply_clahe, clean)
     if invert:
-        region = invert_or_remap(
-            region,
-            original=region_orig,
+        result[y0:y1, x0:x1] = invert_or_remap(
+            result[y0:y1, x0:x1],
             bg_target=bg_target,
             keep_colors=keep_colors,
             keep_segments=keep_segments,
         )
         logger.debug("Inverted colours inside detected region %s", detection.rect)
-    result[y0:y1, x0:x1] = region
     return result, detection
 
 
 def enhance_image(
     img: np.ndarray,
     invert: bool = True,
-    apply_clahe: bool = False,
-    clean: bool = False,
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
@@ -605,8 +573,6 @@ def enhance_image(
     result, _ = enhance_image_ex(
         img,
         invert=invert,
-        apply_clahe=apply_clahe,
-        clean=clean,
         bg_target=bg_target,
         keep_colors=keep_colors,
         keep_segments=keep_segments,

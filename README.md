@@ -49,9 +49,8 @@ untouched.*
    Details: [ADR 0001](docs/adr/0001-robuste-erkennung-und-seitentreue-ausgabe.md).
 2. **Transformation** — inside the rectangle only: strict inversion
    (`255 − v`) or a linear per-channel remap onto a target background colour
-   (`--bg-target R,G,B`, e.g. pure white `255,255,255` for dark boards),
-   plus optional (legacy) CLAHE contrast enhancement and morphological
-   cleaning. Marker colours can be preserved and left un-inverted
+   (`--bg-target R,G,B`, e.g. pure white `255,255,255` for dark boards).
+   Marker colours can be preserved and left un-inverted
    (`--keep-colors`; default `red,green`, since v0.5.0), and explicit hex
    colours / ranges can be excluded as well (`--keep-hex`, since v0.6.0).
 3. **Page-faithful output** — the page is reproduced with its original size and
@@ -113,15 +112,9 @@ Usage: smartinvert -i INPUT [-o OUTPUT] [options]
                           (default: outputs/, same file names)
       --dpi N             Rendering DPI for detection and output
                           (default: 150, range 20–600)
-      --invert / --no-invert
-                          Invert the detected region (default: enabled)
-      --clahe / --no-clahe
-                          CLAHE contrast enhancement inside the region
-                          (legacy, default: off)
-      --clean / --no-clean
-                          Morphological cleaning inside the region
-                          (legacy, default: off)
-      --crop / --no-crop  Size each output page to its detected board
+       --invert / --no-invert
+                           Invert the detected region (default: enabled)
+       --crop / --no-crop  Size each output page to its detected board
                           rectangle; pages without a board keep their full
                           size (default: off – page-faithful output)
       --bg-target SPEC    Target background of the board: 'complement'
@@ -160,11 +153,12 @@ past failing files). Run `smartinvert --help` for the full reference.
 ## Config file
 
 `--config PATH` loads a JSON file holding any of the options `input`,
-`output`, `dpi`, `invert`, `clahe`, `clean`, `crop`, `bg_target`,
-`keep_colors`, `keep_hex` and `debug`. `null` or a missing key uses the
-default, and explicit CLI flags always take precedence. String options use
-CLI syntax (e.g. `"bg_target": "255,255,255"`, `"keep_colors": "red,green"`,
-`"keep_hex": "FF0000, 000001-0000FF"`).
+`output`, `dpi`, `invert`, `crop`, `bg_target`, `keep_colors`, `keep_hex`
+and `debug`. `null` or a missing key uses the default, and explicit CLI
+flags always take precedence. String options use CLI syntax (e.g.
+`"bg_target": "255,255,255"`, `"keep_colors": "red,green"`,
+`"keep_hex": "FF0000, 000001-0000FF"`). Old configs containing the removed
+`clahe`/`clean` keys (removed in v0.7.0) are simply ignored.
 
 ## GUI
 
@@ -187,12 +181,12 @@ start.bat         # Windows
   margin (default: off)
 - **Zielhintergrund** — target background of the board: *Complement (255 − v)*
   (default) or *Reinweiß (255,255,255)*
-- **Rot erhalten** / **Grün erhalten** — keep the red/green marker colours
-  un-inverted (both on by default; blue/yellow and free `R,G,B` targets are
-  CLI-only)
+- The red/green marker colours are always kept un-inverted (the former
+  "Rot/Grün erhalten" checkboxes were removed in v0.7.0 as redundant)
 - **Zusätzliche Hex-Farben** — explicit hex colours / ranges left
   un-inverted, same syntax as `--keep-hex` (e.g. `FF0000, 00FF00,
-  000001-0000FF`; empty = off, since v0.6.0)
+  000001-0000FF`; empty = off, since v0.6.0). Blue/yellow and free `R,G,B`
+  targets are CLI-only
 - **Preview first page** — original and processed page side by side
 - **Run** — processes with a progress bar and reports the output location
 
@@ -201,7 +195,7 @@ start.bat         # Windows
 ```
 smartboard_invert/
   detection.py    # Rectangle detection (threshold, gates, confidence, refinement)
-  processing.py   # Image transformations (255 − v, CLAHE, cleaning), PDF ⇄ images
+  processing.py   # Image transformations (255 − v, remap, keep masks), PDF ⇄ images
   pdfpipeline.py  # process_pdf(): three output strategies, verification, debug
   cli.py          # Batch CLI with JSON config support
   gui.py          # Tkinter GUI

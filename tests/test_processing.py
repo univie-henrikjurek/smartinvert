@@ -130,16 +130,14 @@ class TestEnhanceImage:
         assert bar_in.mean() > 240  # was white
         assert bar_out.mean() < 30  # now dark
 
-    def test_invert_false_keeps_dark_board_dark(self):
+    def test_invert_false_returns_unchanged(self):
+        """ADR 0005, D1: with invert off the image comes back bit-identical
+        (the legacy CLAHE/cleaning pre-processing no longer exists)."""
         rect = (300, 200, 940, 1550)
         img = make_page(rect, bg=(15, 15, 15))
-        out, det = processing.enhance_image_ex(img, invert=False, apply_clahe=True)
+        out, det = processing.enhance_image_ex(img, invert=False)
         assert det.found
-        cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
-        g_in = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)[cy, cx]
-        g_out = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)[cy, cx]
-        assert g_in < 60
-        assert g_out < 128  # CLAHE only, no inversion
+        assert np.array_equal(out, img)
 
     def test_plain_wrapper_matches_ex(self):
         img = make_page((300, 200, 940, 1550))

@@ -42,8 +42,6 @@ REAL_DEFAULTS: Dict[str, Any] = {
     "output": None,
     "dpi": 150,
     "invert": True,
-    "clahe": False,
-    "clean": False,
     "crop": False,
     "debug": False,
     "bg_target": "complement",
@@ -97,30 +95,6 @@ def build_parser() -> argparse.ArgumentParser:
         dest="invert",
         action="store_false",
         help="Disable colour inversion.",
-    )
-    parser.add_argument(
-        "--clahe",
-        action="store_true",
-        default=None,
-        help="Apply CLAHE contrast enhancement inside the region (legacy, default: off).",
-    )
-    parser.add_argument(
-        "--no-clahe",
-        dest="clahe",
-        action="store_false",
-        help="Disable CLAHE.",
-    )
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        default=None,
-        help="Apply morphological cleaning inside the region (legacy, default: off).",
-    )
-    parser.add_argument(
-        "--no-clean",
-        dest="clean",
-        action="store_false",
-        help="Disable morphological cleaning.",
     )
     parser.add_argument(
         "--crop",
@@ -308,8 +282,6 @@ _CONFIG_TYPES: Dict[str, Any] = {
     "output": str,
     "dpi": int,
     "invert": bool,
-    "clahe": bool,
-    "clean": bool,
     "crop": bool,
     "debug": bool,
     "bg_target": str,
@@ -351,8 +323,6 @@ def resolve_options(args: argparse.Namespace, config: dict) -> dict:
         "output",
         "dpi",
         "invert",
-        "clahe",
-        "clean",
         "crop",
         "debug",
         "bg_target",
@@ -467,8 +437,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 dst,
                 dpi=opts["dpi"],
                 invert=bool(opts["invert"]),
-                apply_clahe=bool(opts["clahe"]),
-                clean=bool(opts["clean"]),
                 crop=bool(opts["crop"]),
                 debug_dir=debug_dir,
                 bg_target=bg_target,
