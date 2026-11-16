@@ -74,6 +74,48 @@ class TestCropCheckbox:
         assert kwargs["crop"] is False
 
 
+class TestSimplifiedOptions:
+    """ADR 0005, D1/D2: the legacy CLAHE / noise-cleaning checkboxes and the
+    redundant red/green checkboxes are gone from the GUI; ``keep_colors``
+    is fixed to the documented default {red, green}."""
+
+    def test_removed_controls_do_not_exist(self, tk_root):
+        app = gui.SmartboardGUI(tk_root)
+        for attr in ("clahe_var", "clean_var", "keep_red_var", "keep_green_var"):
+            assert not hasattr(app, attr), f"{attr} must be removed (ADR 0005)"
+
+    def test_remaining_controls_exist(self, tk_root):
+        app = gui.SmartboardGUI(tk_root)
+        for attr in ("invert_var", "crop_var", "bg_var", "keep_hex_entry"):
+            assert hasattr(app, attr), f"{attr} must still exist"
+
+    def test_keep_colors_reaches_process_pdf_as_red_green(
+        self, tk_root, monkeypatch
+    ):
+        calls = []
+
+        def fake_process_pdf(*args, **kwargs):
+            calls.append((args, kwargs))
+            from smartboard_invert.pdfpipeline import ProcessResult
+
+            return ProcessResult(input_path=args[0], output_path=args[1])
+
+        monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
+        app = gui.SmartboardGUI(tk_root)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, "/nonexistent/in.pdf")
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, "/nonexistent/out.pdf")
+        before = {t for t in threading.enumerate()}
+        app.start_processing()
+        for t in threading.enumerate():
+            if t not in before:
+                t.join(timeout=15)
+                assert not t.is_alive(), "processing worker did not finish"
+        assert calls, "process_pdf was not called"
+        assert calls[0][1]["keep_colors"] == frozenset({"red", "green"})
+
+
 class TestKeepHexEntry:
     """ADR 0004, D1/D4: the "Zusätzliche Hex-Farben" entry – exists, defaults
     to empty, is validated in the main thread *before* the worker starts (on

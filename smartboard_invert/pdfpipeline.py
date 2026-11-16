@@ -93,8 +93,6 @@ def process_pdf(
     output_path: "str | Path",
     dpi: int = 150,
     invert: bool = True,
-    apply_clahe: bool = False,
-    clean: bool = False,
     crop: bool = False,
     debug_dir: Optional["str | Path"] = None,
     progress: Optional[ProgressCallback] = None,
@@ -114,9 +112,9 @@ def process_pdf(
     dpi:
         Rendering resolution for detection, verification and (for the
         rerasterize fallback) the embedded page image.  Range 20–600.
-    invert / apply_clahe / clean:
-        Options for the in-region transformation (strict ``255 − v``
-        inversion is the default behaviour).
+    invert:
+        Apply the in-region transformation (strict ``255 − v`` inversion
+        or target-background remap, default: on).
     crop:
         When True, the final output is re-wrapped so every page with a
         detected board is sized to exactly that rectangle; pages without a
@@ -187,8 +185,6 @@ def process_pdf(
                 pno,
                 dpi=dpi,
                 invert=invert,
-                apply_clahe=apply_clahe,
-                clean=clean,
                 debug_dir=debug_dir,
                 stem=input_path.stem,
                 bg_target=bg_target,
@@ -230,8 +226,6 @@ def _process_page(
     *,
     dpi: int,
     invert: bool,
-    apply_clahe: bool,
-    clean: bool,
     debug_dir: Optional[Path],
     stem: str,
     bg_target: Optional[Tuple[int, int, int]],
@@ -295,7 +289,7 @@ def _process_page(
         pr.rect_px = rect_px
         pr.rect_pt = tuple(rect_pt)  # type: ignore[assignment]
 
-    do_something = invert or apply_clahe or clean
+    do_something = invert
 
     if not detection.found or not do_something:
         if detection.found and not do_something:
@@ -329,8 +323,6 @@ def _process_page(
             rect_pt,
             dpi=dpi,
             invert=invert,
-            apply_clahe=apply_clahe,
-            clean=clean,
             bg_target=bg_target,
             keep_colors=keep_colors,
             keep_segments=keep_segments,
@@ -339,7 +331,7 @@ def _process_page(
             # fall back: clear the copied content, embed the full-page image
             _clear_page(new_page, out_doc)
             processed = _transform_render(
-                img_orig, rect_px, invert, apply_clahe, clean,
+                img_orig, rect_px, invert,
                 bg_target=bg_target, keep_colors=keep_colors,
                 keep_segments=keep_segments,
             )
@@ -347,7 +339,7 @@ def _process_page(
     else:
         new_page = out_doc.new_page(width=page_rect.width, height=page_rect.height)
         processed = _transform_render(
-            img_orig, rect_px, invert, apply_clahe, clean,
+            img_orig, rect_px, invert,
             bg_target=bg_target, keep_colors=keep_colors,
             keep_segments=keep_segments,
         )
@@ -373,32 +365,22 @@ def _transform_render(
     img: np.ndarray,
     rect: Rect,
     invert: bool,
-    apply_clahe: bool,
-    clean: bool,
     *,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
     keep_segments: "Tuple[HexSegment, ...]" = (),
 ) -> np.ndarray:
     """Apply the in-region transformation to a full-page render."""
-    if not (invert or apply_clahe or clean):
+    if not invert:
         return img.copy()
     x0, y0, x1, y1 = rect
     out = img.copy()
-    region = out[y0:y1, x0:x1]
-    # The keep-colour exclusion must be computed on the original (pre-CLAHE/
-    # clean) pixels.
-    region_orig = region.copy() if invert else None
-    region = processing._process_region(region, apply_clahe, clean)
-    if invert:
-        region = processing.invert_or_remap(
-            region,
-            original=region_orig,
-            bg_target=bg_target,
-            keep_colors=keep_colors,
-            keep_segments=keep_segments,
-        )
-    out[y0:y1, x0:x1] = region
+    out[y0:y1, x0:x1] = processing.invert_or_remap(
+        out[y0:y1, x0:x1],
+        bg_target=bg_target,
+        keep_colors=keep_colors,
+        keep_segments=keep_segments,
+    )
     return out
 
 
@@ -526,8 +508,6 @@ def _try_image_replace(
     *,
     dpi: int,
     invert: bool,
-    apply_clahe: bool,
-    clean: bool,
     bg_target: Optional[Tuple[int, int, int]] = None,
     keep_colors: AbstractSet[str] = frozenset(),
     keep_segments: "Tuple[HexSegment, ...]" = (),
@@ -627,14 +607,9 @@ def _try_image_replace(
     # Transform only inside the mapped rect, then replace the XObject (PNG:
     # lossless, same dimensions).
     region = native[y0:y1, x0:x1]
-    # The keep-colour exclusion must be computed on the original (pre-CLAHE/
-    # clean) pixels.
-    region_orig = region.copy() if invert else None
-    region = processing._process_region(region, apply_clahe, clean)
     if invert:
         region = processing.invert_or_remap(
             region,
-            original=region_orig,
             bg_target=bg_target,
             keep_colors=keep_colors,
             keep_segments=keep_segments,

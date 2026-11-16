@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smartboard-invert"
-version = "0.6.0"  # keep in sync with __version__ in smartboard_invert/__init__.py
+version = "0.7.0"  # keep in sync with __version__ in smartboard_invert/__init__.py
 description = "Selective smartboard inversion for PDFs (auto rectangle detection, CLI + simple GUI)"
 readme = "README.md"
 # The starter script normally uses uv, which downloads its own CPython 3.12 –

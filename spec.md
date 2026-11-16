@@ -181,3 +181,29 @@ Textfeld „Zusätzliche Hex-Farben“ (P3‑FR‑11).
 *Phase 3 addendum:* 2026‑11‑15, **Coder**
 
 ---
+
+## Phase 4 (2026‑11‑16): Optionen vereinfachen (v0.7.0)
+
+Phase 4 entfernt überflüssige/verwirrende Legacy-Optionen (keine neue
+User-Feature): das CLAHE-Kontrast-Enhancement und die morphologische
+Noise-Cleaning (seit v0.3.0 „legacy" und default AUS) werden komplett
+entfernt, die GUI wird auf die relevanten Optionen reduziert. Grundlage:
+[ADR 0005](docs/adr/0005-optionen-vereinfachen.md).
+
+### 4.1 Geänderte Anforderungen (ersetzen Phase 2/3 teilweise)
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P4‑FR‑1** | Optionsatz (v0.7.0) | CLI: `--input`, `--output`, `--dpi`, `--invert/--no-invert`, `--crop/--no-crop`, `--bg-target`, `--keep-colors`, `--keep-hex`, `--debug`, `--config`, `-v`, `--version`. **Entfernt (breaking):** `--clahe/--no-clahe`, `--clean/--no-clean` sowie Config-Keys `clahe`/`clean` (unbekannte Keys werden ignoriert, kein Fehler). GUI: DPI, „Invert colours", „Auf Board zuschneiden", „Zielhintergrund", „Zusätzliche Hex-Farben" — **entfernt:** „Apply CLAHE (legacy)", „Noise cleaning (legacy)", „Rot erhalten", „Grün erhalten". (Ersetzt FR‑3/FR‑5/FR‑6 bzw. P2‑FR‑8 in den entfallenen Punkten; die GUI-Notiz am Ende des Phase‑3‑Addendums zu den Checkboxen gilt damit nicht mehr.) |
+
+### 4.2 Abweichungen (dokumentiert)
+
+| # | Abweichung | Begründung |
+|---|------------|------------|
+| **P4‑D‑1** | **Breaking Change (v0.7.0):** CLAHE und morphologisches Cleaning aus GUI, CLI, Config und Backend entfernt (`_process_region` weg; `do_something` reduziert auf `invert`). Die GUI übergibt `keep_colors` **fix** als `{red, green}` (bisheriger Default — keine Verhaltensänderung). | User-Feedback (2026‑11‑16): Noise-Cleaning „lässt alles verschwinden" (Morphologie frisst dünne Striche/Text); CLAHE ist Endnutzern unverständlich und für Farbinhalte destruktiv (Graustufen-Rundgang). Beide Optionen waren seit v0.3.0 „legacy", default AUS und für den Use-Case (saubere Smartboard-PDFs) unnötig; die Red/Grün-Checkboxen waren durch das Hex-Feld (ADR 0004) redundant. Breaking Changes in der 0.x-Linie zulässig und dokumentiert (README, Config-Kompatibilitäts-Hinweis). |
+
+---
+
+*Phase 4 addendum:* 2026‑11‑16, **Supervisor**
+
+---

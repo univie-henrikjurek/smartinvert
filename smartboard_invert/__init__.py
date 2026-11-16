@@ -33,7 +33,7 @@ from .processing import (
     validate_keep_segments,
 )
 
-__version__ = "0.6.0"  # keep in sync with the `version` in pyproject.toml
+__version__ = "0.7.0"  # keep in sync with the `version` in pyproject.toml
 
 __all__ = [
     "DetectionResult",
