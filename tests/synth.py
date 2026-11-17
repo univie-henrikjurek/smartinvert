@@ -7,6 +7,19 @@ supported, mirroring the two pipeline paths (ADR 0001, D2):
 * ``image``  – the board is an embedded image XObject (typical smartboard
   export).
 * ``vector`` – the board is drawn with vector paths (like ``inputs/test.pdf``).
+* ``xobj``   – the board is drawn inside a Form XObject (typical editor /
+  "save as PDF" output — the vector-invert path of ADR 0008).
+* ``vector-<construct>`` – a vector board plus one PDF construct the v1
+  vector rewrite refuses (ADR 0008, self-healing raster fallback):
+  ``vector-inline-image``, ``vector-shading``, ``vector-extgstate``,
+  ``vector-rotated-text``.  (Non-device ``cs`` colour spaces are covered by
+  the rewriter unit tests in ``tests/test_vectorops.py`` — MuPDF 1.28 cannot
+  render pattern/ICCBased spaces reliably, so there is no fixture kind for
+  them.)
+
+Any spec may set ``"offset": (dx, dy)`` to shift the page's MediaBox
+(``[dx dy W+dx H+dy]``) — the real-world "offset page box" scenario from
+ADR 0007.
 
 ``make_pdf`` returns the ground truth (dark-area rectangle in render pixels at
 ``DPI`` and in page points) for every page.
@@ -82,6 +95,134 @@ def board_image(
     return img
 
 
+def _draw_vector_board(page, spec: dict) -> None:
+    """Draw the dark board rectangle + white lines with vector paths (top-left
+    ``rect`` in pt, BGR ``bg``).
+
+    Optional ``marks``: ``[(x, y, w, h) in pt top-left, (b, g, r)]`` vector
+    rectangles (e.g. a red "marker" rect for keep-colour tests); optional
+    ``text``: ``[(x, y, string)]`` inserted in black (y = text top, pt) —
+    lecture-style vector content.
+    """
+    x, y, w, h = spec["rect"]
+    bg = spec.get("bg", (20, 20, 25))  # BGR (fixture convention) -> RGB
+    shape = page.new_shape()
+    shape.draw_rect(fitz.Rect(x, y, x + w, y + h))
+    shape.finish(color=None, fill=(bg[2] / 255.0, bg[1] / 255.0, bg[0] / 255.0))
+    if spec.get("lines", True):
+        yy = y + h * 0.10
+        while yy < y + h * 0.90:
+            shape.draw_line(fitz.Point(x + w * 0.10, yy), fitz.Point(x + w * 0.90, yy))
+            shape.finish(color=(1.0, 1.0, 1.0), width=1.5)
+            yy += h * 0.08
+    shape.commit()
+    for (mx, my, mw, mh), color in spec.get("marks", ()):
+        # color is BGR (fixture convention) -> RGB for PyMuPDF
+        shape = page.new_shape()
+        shape.draw_rect(fitz.Rect(mx, my, mx + mw, my + mh))
+        shape.finish(color=None, fill=(color[2] / 255.0, color[1] / 255.0, color[0] / 255.0))
+        shape.commit()
+    for (tx, ty, text) in spec.get("text", ()):
+        page.insert_text(fitz.Point(tx, ty), text, fontsize=14)
+
+
+def _draw_xobj_board(doc, page, x: float, y: float, w: float, h: float, bg, lines: bool) -> None:
+    """Draw the board inside a Form XObject (editor-style export).
+
+    The form content uses absolute page coordinates (bottom-origin), the form
+    BBox equals the board rect and the page content is a single ``/Fm0 Do`` —
+    i.e. the board only exists inside the XObject tree (the ADR 0008 layout).
+    """
+    r, g, b = (c / 255.0 for c in (bg[2], bg[1], bg[0]))  # bg is BGR
+    y0, y1 = A4_H - (y + h), A4_H - y  # bottom-origin
+    stream = [f"{b:.3f} {g:.3f} {r:.3f} rg {x:.3f} {y0:.3f} {w:.3f} {h:.3f} re f"]
+    if lines:
+        yy_frac = 0.10
+        while yy_frac < 0.90:
+            ypdf = A4_H - (y + h * yy_frac)
+            stream.append(
+                f"1 1 1 RG 1.5 w {x + w * 0.10:.3f} {ypdf:.3f} m "
+                f"{x + w * 0.90:.3f} {ypdf:.3f} l S"
+            )
+            yy_frac += 0.08
+    fxref = doc.get_new_xref()
+    doc.update_object(
+        fxref,
+        f"<< /Type /XObject /Subtype /Form /BBox [{x:.3f} {y0:.3f} "
+        f"{x + w:.3f} {y1:.3f}] /Resources << >> /Length 0 >>",
+    )
+    doc.update_stream(fxref, ("\n".join(stream)).encode("latin-1"))
+    cxref = doc.get_new_xref()
+    doc.update_object(cxref, "<< /Length 0 >>")
+    doc.update_stream(cxref, b"/Fm0 Do")
+    page.set_contents(cxref)
+    doc.xref_set_key(page.xref, "Resources", f"<< /XObject << /Fm0 {fxref} 0 R >> >>")
+
+
+def _contents_xref(doc, page) -> int:
+    kind, val = doc.xref_get_key(page.xref, "Contents")
+    return page.xref if kind == "stream" else int(val.split()[0])
+
+
+def _append_raw(page, doc, ops: bytes, resources: str = "") -> None:
+    """Append raw content-stream operators to a vector-drawn fixture page.
+
+    The vector board is plain paths (no /Font, /XObject, ...), so the page's
+    empty /Resources dict can be replaced wholesale.
+    """
+    page.clean_contents()
+    doc.update_stream(_contents_xref(doc, page), page.read_contents() + b"\n" + ops)
+    if resources:
+        doc.xref_set_key(page.xref, "Resources", f"<< {resources} >>")
+
+
+def _append_vector_construct(doc, page, kind: str, x: float, y: float, w: float, h: float) -> None:
+    """Append one vector-unsupported PDF construct (ADR 0008 fallback cases)
+    at the centre of the board (``x, y, w, h`` top-left in pt)."""
+    sz = 40.0
+    cx = x + w / 2.0
+    cy = A4_H - (y + h / 2.0)  # centre, bottom-origin
+    x0, y0 = cx - sz / 2.0, cy - sz / 2.0
+    if kind == "vector-inline-image":
+        payload = bytes((i * 7) % 256 for i in range(16 * 16 * 3))
+        ops = (
+            f"q {sz:.3f} 0 0 {sz:.3f} {x0:.3f} {y0:.3f} cm "
+            f"BI /W 16 /H 16 /CS /RGB /BPC 8 ID ".encode("latin-1")
+            + payload
+            + b" EI Q"
+        )
+        _append_raw(page, doc, ops)
+    elif kind == "vector-shading":
+        sxref = doc.get_new_xref()
+        doc.update_object(
+            sxref,
+            f"<< /Type /Shading /ShadingType 2 /ColorSpace /DeviceRGB "
+            f"/Coords [{x0:.3f} {y0:.3f} {x0 + sz:.3f} {y0 + sz:.3f}] "
+            f"/Function << /FunctionType 2 /Domain [0 1] /C0 [1 1 1] /C1 [0 0 0] "
+            f"/BitsPerSample 8 /Matrix [1 0 0 1 0 0] >> /Extend [true true] >>",
+        )
+        _append_raw(
+            page, doc,
+            f"{x0:.3f} {y0:.3f} {sz:.3f} {sz:.3f} re W n /Sh0 sh".encode("latin-1"),
+            resources=f"/Shading << /Sh0 {sxref} 0 R >>",
+        )
+    elif kind == "vector-extgstate":
+        _append_raw(
+            page, doc,
+            f"q /GS0 gs 1 1 1 rg {x0:.3f} {y0:.3f} {sz:.3f} {sz:.3f} re f Q".encode("latin-1"),
+            resources="/ExtGState << /GS0 << /Type /ExtGState /ca 0.5 /CA 0.5 >> >>",
+        )
+    elif kind == "vector-rotated-text":
+        _append_raw(
+            page, doc,
+            f"BT /F1 14 Tf 0.7071 0.7071 -0.7071 0.7071 {cx:.3f} {cy:.3f} "
+            f"Tm (Hallo) Tj ET".encode("latin-1"),
+            resources="/Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >>",
+        )
+    else:  # pragma: no cover - defensive
+        raise ValueError(f"unknown vector construct: {kind}")
+
+
 def make_pdf(path: "str | Path", pages: Sequence[dict]) -> List[dict]:
     """Create a synthetic PDF and return per-page ground truth.
 
@@ -144,19 +285,22 @@ def make_pdf(path: "str | Path", pages: Sequence[dict]) -> List[dict]:
             else:
                 rect_pt = rect_pts  # type: ignore[assignment]
                 rect_px = rect_px_list  # type: ignore[assignment]
-        elif kind == "vector":
+        elif kind in (
+            "vector",
+            "xobj",
+            "vector-inline-image",
+            "vector-shading",
+            "vector-extgstate",
+            "vector-rotated-text",
+        ):
             x, y, w, h = spec["rect"]
             bg = spec.get("bg", (20, 20, 25))
-            shape = page.new_shape()
-            shape.draw_rect(fitz.Rect(x, y, x + w, y + h))
-            shape.finish(color=None, fill=tuple(c / 255.0 for c in bg))
-            if spec.get("lines", True):
-                yy = y + h * 0.10
-                while yy < y + h * 0.90:
-                    shape.draw_line(fitz.Point(x + w * 0.10, yy), fitz.Point(x + w * 0.90, yy))
-                    shape.finish(color=(1.0, 1.0, 1.0), width=1.5)
-                    yy += h * 0.08
-            shape.commit()
+            if kind == "xobj":
+                _draw_xobj_board(doc, page, x, y, w, h, bg, bool(spec.get("lines", True)))
+            else:
+                _draw_vector_board(page, spec)
+                if kind.startswith("vector-"):
+                    _append_vector_construct(doc, page, kind, x, y, w, h)
             rect_pt = (x, y, x + w, y + h)
             rect_px = (pt2px(x), pt2px(y), pt2px(x + w), pt2px(y + h))
         elif kind == "blank":
@@ -169,6 +313,26 @@ def make_pdf(path: "str | Path", pages: Sequence[dict]) -> List[dict]:
             rect_px = None
         else:  # pragma: no cover - defensive
             raise ValueError(f"unknown page kind: {kind}")
+        off = spec.get("offset")
+        if off and rect_pt is not None:
+            dx, dy = off
+            doc.xref_set_key(
+                page.xref, "MediaBox", f"[{dx} {dy} {A4_W + dx} {A4_H + dy}]"
+            )
+            # the visible window shifts, so the board moves (−dx, +dy) in
+            # top-left render coordinates
+            rect_pt = (
+                rect_pt[0] - dx,
+                rect_pt[1] + dy,
+                rect_pt[2] - dx,
+                rect_pt[3] + dy,
+            )
+            rect_px = (
+                rect_px[0] - dx * PX_PER_PT,
+                rect_px[1] + dy * PX_PER_PT,
+                rect_px[2] - dx * PX_PER_PT,
+                rect_px[3] + dy * PX_PER_PT,
+            )
         truths.append({"kind": kind, "rect_px": rect_px, "rect_pt": rect_pt})
 
     path = Path(path)
