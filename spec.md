@@ -335,3 +335,39 @@ Vektor-Content nicht mehr; der Regler ist verlässlich überflüssig
 *Phase 8 addendum:* 2026‑11‑19, **Supervisor**
 
 ---
+
+## Phase 9 — BYO-env: eigene Python-Umgebung des Users (v0.9.0-dev, 2026-11-21)
+
+User-Anfrage: Power-User sollen ihre eigene Python-Installation / venv für den
+Start nutzen können, statt der isolierten `.venv/`, die der Starter anlegt.
+Grundlage: [ADR 0010](docs/adr/0010-byo-eigene-python-umgebung.md).
+
+Das Tool-Code wird aus dem Checkout geladen (`python -m smartboard_invert …`,
+weil das aktuelle Verzeichnis an Position 1 von `sys.path` steht); die fremde
+Umgebung muss nur die vier Laufzeit-Abhängigkeiten enthalten, **nie** das Tool
+selbst — und wird vom Starter **niemals verändert** (keine Installation, keine
+Schriftzug-Änderungen).
+
+### 9.1 Anforderungen
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P9‑FR‑1** | `--use-env PFAD` | Starter-Flag (vor dem Tool-Code, position-unabhängig, kombinierbar mit Tool-Argumenten): aktiviert den BYO-env-Modus. `PFAD` = Umfeld-Ordner (venv/conda) oder direkte Python-Executable. |
+| **P9‑FR‑2** | Validierung ohne Installation | Python ≥ 3.9 muss vorhanden sein und `import fitz, cv2, numpy, PIL` muss gelingen; sonst Fehlermeldung mit Hinweis, die Abhängigkeiten selbst zu installieren. Der Starter installiert in die fremde Umgebung **nichts**. |
+| **P9‑FR‑3** | Persistenz | Die validierte Wahl wird in der git-ignorierten, checkout-lokalen Datei `.smartinvert_env` gespeichert (`PYTHON=<absoluter Pfad>`); spätere Starts verwenden sie still, jeweils mit erneuter Validierung. |
+| **P9‑FR‑4** | `--use-standard` | Entfernt `.smartinvert_env` und stellt den Standard-Weg (uv/`.venv/`) wieder her. |
+| **P9‑FR‑5** | BYO-Start | Die uv/`.venv/`-Maschinerie wird übersprungen; Start via `<deine-python> -m smartboard_invert [args…]` (CLI) bzw. `<deine-python> -m smartboard_invert.gui` (GUI) aus dem Projekt-Root. |
+| **P9‑FR‑6** | Plattformen | Linux/macOS (`start.sh`) und Windows (`start.bat`; venv-Layout `Scripts\python.exe` + conda-Layout `python.exe` im Ordner-Root). Kein Auto-Detection, kein Start-Prompt; Default-Verhalten bleibt unverändert. |
+
+### 9.2 Abgrenzung
+
+* Die fremde Umgebung wird **nicht** angefasst (kein `pip install .` dorthin,
+  keine Änderungen an `pyvenv.cfg`/`conda-meta`).
+* Die `smartinvert`-Kommando-Datei der fremden Umgebung existiert (im Normalfall)
+  nicht — der Starter verwendet immer `python -m smartboard_invert …` aus dem
+  Projekt-Root, was ohne Installation funktioniert.
+* Befindet sich die gespeicherte Umgebung nicht mehr / sind Abhängigkeiten
+  verschwunden, verweigert der Starter den Start und verweist auf
+  `--use-standard` (fail-safe, kein stiller Fallback).
+
+---
