@@ -9,11 +9,113 @@ rem
 rem No Python installation is required: the starter uses uv, which downloads
 rem a managed CPython 3.12 on first use.  If uv cannot be installed (e.g. no
 rem network), it falls back to the system Python (>= 3.9).
+rem
+rem Advanced (ADR 0010): run the tool with YOUR OWN Python environment
+rem (the environment must already contain the dependencies):
+rem   start.bat --use-env C:\path\to\venv               (venv or conda folder)
+rem   start.bat --use-env C:\path\to\venv\Scripts\python.exe
+rem The choice is stored in .smartinvert_env (git-ignored) and silently reused
+rem on later starts.  start.bat --use-standard switches back to the standard
+rem isolated environment.  In BYO-env mode the starter never installs anything
+rem into your environment.
 setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo Smartboard PDF Inverter
 echo.
+
+rem ------------------------------------------------ [0] BYO-env mode ------
+rem Parse the starter-level flags --use-env / --use-standard out of the
+rem arguments; everything else is passed to the tool unchanged (reconstructed
+rem in ARGS, so consumed flags never leak into the CLI call).
+set "ENV_FILE=.smartinvert_env"
+set "CUSTOM_PY="
+set "ARGS="
+set "HAD_ARGS=0"
+
+:parse_loop
+if "%~1"=="" goto parse_done
+
+if /i "%~1"=="--use-env" goto byo_use_env
+if /i "%~1"=="--use-standard" goto byo_use_standard
+
+set "HAD_ARGS=1"
+set "A=%~1"
+if "%A: =%"=="%A%" (
+    set "ARGS=%ARGS% %A"
+) else (
+    set "ARGS=%ARGS% "%A""
+)
+shift
+goto parse_loop
+
+:byo_use_env
+shift
+if "%~1"=="" (
+    echo error: --use-env needs a path ^(venv folder or python executable^)
+    pause
+    exit /b 1
+)
+call :resolve_python_path "%~1"
+if errorlevel 1 (
+    echo error: no usable Python found at: %~1
+    pause
+    exit /b 1
+)
+set "CUSTOM_PY=%RESOLVED_PY%"
+call :validate_python_env "%CUSTOM_PY%"
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+echo PYTHON=%CUSTOM_PY%> "%ENV_FILE%"
+echo [env] using your Python environment: %CUSTOM_PY%
+echo [env] remembered in %ENV_FILE% ^(start.bat --use-standard to revert^)
+shift
+goto parse_loop
+
+:byo_use_standard
+if exist "%ENV_FILE%" (
+    del "%ENV_FILE%"
+    echo [env] switched back to the standard isolated environment
+)
+shift
+goto parse_loop
+
+:parse_done
+
+rem No --use-env on the command line: silently reuse a stored choice - but
+rem re-validate it (the environment may have been moved/deleted since).
+if defined CUSTOM_PY goto env_loaded
+if not exist "%ENV_FILE%" goto env_loaded
+set "STORED="
+for /f "usebackq tokens=1 delims=" %%a in ("%ENV_FILE%") do set "STORED=%%a"
+if not defined STORED goto env_loaded
+set "STORED=%STORED:PYTHON==%"
+if not defined STORED goto env_loaded
+if exist "%STORED%" goto stored_present
+echo error: stored Python environment no longer exists: %STORED%
+echo hint : run "start.bat --use-standard" to go back to the default.
+pause
+exit /b 1
+
+:stored_present
+call :validate_python_env "%STORED%"
+if errorlevel 1 (
+    echo error: stored Python environment is broken: %STORED%
+    echo hint : reinstall the dependencies or run "start.bat --use-standard".
+    pause
+    exit /b 1
+)
+set "CUSTOM_PY=%STORED%"
+echo [env] using your stored Python environment: %CUSTOM_PY%
+
+:env_loaded
+
+rem BYO-env mode: skip the uv/.venv machinery entirely - the tool code is
+rem loaded from this checkout (CWD is the repo root), your environment is
+rem never modified.
+if defined CUSTOM_PY goto byo_run
 
 rem ------------------------------------------------------------ [1/3] uv --
 set "UV="
@@ -82,15 +184,75 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem ------------------------------------------------------------ [3/3] run -
-if not "%~1"=="" goto run_cli
+rem ------------------------------------------------------------- [3/3] run -
+if "%HAD_ARGS%"=="1" goto std_cli
 
 echo [3/3] starting GUI ...
 .venv\Scripts\python.exe -m smartboard_invert.gui
 if errorlevel 1 pause
 exit /b 0
 
-:run_cli
+:std_cli
 echo [3/3] running ...
-.venv\Scripts\smartinvert.exe %*
+.venv\Scripts\smartinvert.exe %ARGS%
 exit /b %errorlevel%
+
+:byo_run
+if "%HAD_ARGS%"=="1" goto byo_cli
+
+echo [3/3] starting GUI ...
+"%CUSTOM_PY%" -m smartboard_invert.gui
+if errorlevel 1 pause
+exit /b 0
+
+:byo_cli
+echo [3/3] running ...
+"%CUSTOM_PY%" -m smartboard_invert %ARGS%
+exit /b %errorlevel%
+
+rem ------------------------------------------------------------- helpers ---
+rem Accepts a venv/conda root folder or a direct python.exe path.
+rem Sets RESOLVED_PY on success (exit /b 0), returns exit /b 1 otherwise.
+:resolve_python_path
+set "RESOLVED_PY="
+set "P=%~1"
+if "%P:~-1%"=="\" set "P=%P:~0,-1%"
+if exist "%P%\" (
+    rem a folder: venv layout (Scripts\python.exe) or conda layout (python.exe)
+    if exist "%P%\Scripts\python.exe" (
+        set "RESOLVED_PY=%P%\Scripts\python.exe"
+        exit /b 0
+    )
+    if exist "%P%\python.exe" (
+        set "RESOLVED_PY=%P%\python.exe"
+        exit /b 0
+    )
+    exit /b 1
+)
+if exist "%P%" (
+    rem a direct executable
+    set "RESOLVED_PY=%P%"
+    exit /b 0
+)
+exit /b 1
+
+rem Prints an error and returns errorlevel 1 if the interpreter is too old
+rem or the required dependencies are missing.  Never installs anything.
+:validate_python_env
+"%~1" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" 2>nul
+if errorlevel 1 (
+    echo error: "%~1" is not a usable Python 3.9+ interpreter.
+    exit /b 1
+)
+"%~1" -c "import fitz, cv2, numpy, PIL" 2>nul
+if errorlevel 1 (
+    echo error: the environment of "%~1" is missing the required
+    echo         dependencies ^(PyMuPDF, opencv-python-headless, numpy,
+    echo         Pillow^).  Install them yourself with:
+    echo.
+    echo         "%~1" -m pip install PyMuPDF opencv-python-headless numpy Pillow
+    echo.
+    echo         This tool never installs anything into your environment.
+    exit /b 1
+)
+exit /b 0
