@@ -100,8 +100,6 @@ the window:
 - **Output (optional)** — destination file or folder. Leave empty for the
   default `<name>_inverted.pdf` next to the input; folder input requires an
   output folder
-- **DPI** slider (default 150 — raise to ~300 for sharper output, at the cost
-  of processing time)
 - **Preview first page** — original and processed page side by side
 - **Run** — processes all pages with a progress bar; a dialog reports the
   output location when finished
@@ -158,7 +156,89 @@ Leave the session again with `deactivate`.
 
 ---
 
-## 6. Troubleshooting
+## 6. Advanced: use your own Python environment (BYO-env)
+
+> For experienced users only. If you already maintain a Python environment
+> (your own venv, a conda environment, …), you can run the tool **with it**
+> instead of the private `.venv/` that the starter normally creates. The
+> starter **validates but never installs anything into your environment** and
+> never modifies it — the tool code is simply loaded from this project folder
+> at start time.
+
+### What your environment needs
+
+- Python **3.9 or newer**, and
+- the four runtime dependencies installed in it:
+
+  ```
+  PyMuPDF   opencv-python-headless   numpy   Pillow
+  ```
+
+  Install them with your environment's package manager, e.g.:
+
+  ```
+  <your python> -m pip install PyMuPDF opencv-python-headless numpy Pillow
+  ```
+
+  (for uv-managed environments: `uv pip install --python <your python> PyMuPDF opencv-python-headless numpy Pillow`)
+
+The tool itself does **not** need to be installed in your environment.
+
+### Activate the mode (one-time)
+
+Point the starter at your environment — the environment's **folder** or the
+Python **executable** both work:
+
+```bash
+# Linux / macOS
+./start.sh --use-env /path/to/your/venv
+./start.sh --use-env /path/to/your/venv/bin/python
+```
+
+```powershell
+# Windows (venv or conda folder, or the python.exe directly)
+.\start.bat --use-env C:\path\to\your\venv
+.\start.bat --use-env C:\path\to\your\venv\Scripts\python.exe
+```
+
+You can combine this with normal arguments in the same call, e.g.
+`.\start.bat --use-env C:\env -i in.pdf -o out.pdf`.
+
+The starter checks your environment (Python version + importable
+dependencies) and, if everything is fine, remembers the choice in a local,
+git-ignored file (`.smartinvert_env` in the project folder). **Every later
+start then automatically uses your environment — without any flag** — and
+re-validates it each time (so a moved or cleaned-up environment is reported
+instead of causing confusing errors later).
+
+If the check fails, the starter prints exactly what is missing and how to
+install it — then nothing has changed anywhere.
+
+### Switch back to the standard setup
+
+```bash
+./start.sh --use-standard      # Linux / macOS
+.\start.bat --use-standard     # Windows
+```
+
+This deletes `.smartinvert_env` and restores the usual isolated `.venv/`
+setup (double-clicking `start.bat` works exactly as before).
+
+### What is different in BYO-env mode?
+
+- The one-time `[1/3]`/`[2/3]` setup steps are skipped entirely — nothing is
+  downloaded into your environment.
+- The `smartinvert` command does **not** exist in your environment (unless
+  you install the tool there yourself) — the starter always uses
+  `python -m smartboard_invert …` from the project folder, which works
+  without any installation of the tool.
+- If your environment is moved or its dependencies are removed, the starter
+  refuses to start and points you to `--use-standard` (fail-safe: there is no
+  silent fallback to the standard setup).
+
+---
+
+## 7. Troubleshooting
 
 | Problem | Solution |
 | --- | --- |
@@ -174,7 +254,7 @@ Leave the session again with `deactivate`.
 
 ---
 
-## 7. Uninstalling
+## 8. Uninstalling
 
 Delete the project folder (including `.venv`). Optionally also remove uv if
 you don't need it for anything else: `~/.local/bin/uv` (Linux/macOS) or

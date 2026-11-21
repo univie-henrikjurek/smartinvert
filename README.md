@@ -102,6 +102,14 @@ dependencies — roughly 1–3 minutes once; every later start is instant.
 `uv` cannot be installed, the starter transparently falls back to the system
 Python (3.9 or newer).
 
+> **Already have a Python environment? (advanced, since v0.9.0-dev)**
+> Experienced users can run the tool with their own venv/conda environment
+> instead of the private one: `./start.sh --use-env /path/to/venv` (Windows:
+> `start.bat --use-env "C:\path\to\venv"`). The starter validates your
+> environment but **never installs anything into it**; the choice is
+> remembered for later starts (`--use-standard` reverts). Details:
+> [INSTALL.md, section 6](INSTALL.md#6-advanced-use-your-own-python-environment-byo-env).
+
 ```bash
 # Batch: all PDFs in a directory (output files keep their names)
 ./start.sh -i inputs/ -o outputs/ --debug
