@@ -190,7 +190,6 @@ start.bat         # Windows
 - **Output (optional)** — destination file/folder; leave empty for the default
   `<name>_inverted.pdf` next to the input (folder input requires an output
   folder)
-- **DPI** slider (default 150; raise to 300 for sharper results)
 - **Auf Board zuschneiden (Rand entfernen)** — sizes each page with a
   detected board to exactly that rectangle, removing the surrounding page
   margin (default: on since v0.7.1 — the page then contains only the

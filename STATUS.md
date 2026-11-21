@@ -507,9 +507,15 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   available in the headless dev container, so the GUI was verified by
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
-## Next Step / STAND (2026-11-19)
+## Next Step / STAND (2026-11-19, Tag 2)
+**User-Bestätigung (2026-11-19):** „SUPER SUPER DAS FUNKTIONIERT
+PERFEKT" — der Fix (gs/scn/cs + Vector-Crop-Kontrakt) läuft auf
+Windows mit `inputs/test.pdf`. → **Merge-Freigabe erteilt** („den
+feature branch auf main mergen") + neuer Auftrag: DPI-Regler aus dem
+GUI entfernen (ADR 0009), Docs anpassen.
+
 **v0.8.0-dev** liegt auf Branch **`feature/svg-implement`** (gepusht
-auf GitHub, **nicht gemergt** — User-Direktive „nicht main mergen").
+auf GitHub); Merge in `master` (Default-Branch) steht an.
 
 **User-Feedback 2026-11-18:** „immer noch pixelig … mit dem anderen
 Branch getestet … es sind keine Bilder in dem PDF, es ist das
@@ -553,10 +559,17 @@ neu. Suite: **413 passed + 1 skipped** (headless), **16 GUI** (Xvfb),
 Coverage **90.54 %**. ADR 0008 (Revision-Sektion) + spec.md (Phase 7.3)
 aktualisiert.
 
-**Nächste Schritte:**
-1. Branch-Update (Fix-Commit) pushen → User testet erneut mit dem
-   echten Dokument (diesmal MUSS das Log `method=vector-invert`
-   zeigen; sonst Fallback-Grund aus dem DEBUG-Log + Dokument
-   anfordern).
-2. Danach: **Merge + Release v0.8.0** — User-Entscheidung ausstehend
-   (frühere „nicht mergen"-Direktive gilt formell weiter).
+**DPI-Regler entfernt (ADR 0009, 2026-11-19):** GUI ohne
+DPI-Widget/`dpi_var`/`_on_dpi_change`; GUI rendert + verarbeitet mit
+Pipeline-Default (150 dpi); `process_pdf` erhält keinen `dpi` mehr
+aus der GUI. CLI `--dpi` (20–600) + Config-Option `dpi` unverändert.
+GUI-Tests erweitert: `dpi_var`/`dpi_slider`/`dpi_value` dürfen nicht
+mehr existieren; kein `dpi`-Keyword bei `process_pdf`. README (GUI-
+Abschnitt) + spec.md (Phase 8) + ADR 0009.
+
+**Nächste Schritte (laufend):**
+1. ~~Fix-Commit pushen, User-Test~~ → erledigt (User-Bestätigung).
+2. ~~DPI-Regler entfernen + Docs~~ → erledigt (ADR 0009).
+3. **Merge `feature/svg-implement` → `master`** (User-Freigabe
+   2026-11-19) + Push. Danach optional: Tag `v0.8.0` + GitHub-Release
+   (User noch nicht explizit verlangt).

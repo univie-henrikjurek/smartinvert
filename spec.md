@@ -314,3 +314,24 @@ betreffenden Formulierungen in P7‑FR‑2/4):
 *Phase 7 revision addendum:* 2026‑11‑19, **Supervisor**
 
 ---
+
+## Phase 8 — GUI ohne DPI-Regler (v0.8.0, 2026-11-19)
+
+User-Anfrage: „DPI Regler entfernen, den brauchen wir nicht mehr im
+GUI." Grundlage: [ADR 0009](docs/adr/0009-gui-dpi-regler-entfernt.md).
+Seit P7 (vector-invert) bestimmt das Processing-DPI die Qualität von
+Vektor-Content nicht mehr; der Regler ist verlässlich überflüssig
+(ADR-0005-Philosophie: weniger Optionen).
+
+### 8.1 Anforderungen
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P8‑FR‑1** | GUI ohne DPI-Option | Der DPI-Regler (Widget, Variable, Readout, Callback) wird aus dem GUI entfernt. Die GUI rendert die Vorschau und verarbeitet mit dem Pipeline-Default (**150 dpi**, Signature-Default von `pdf_to_images`/`process_pdf`); es wird kein `dpi`-Parameter mehr übergeben. |
+| **P8‑FR‑2** | CLI unverändert | Das CLI-Flag `--dpi` (20–600) und die Config-File-Option `dpi` bleiben für Power-User erhalten. |
+
+---
+
+*Phase 8 addendum:* 2026‑11‑19, **Supervisor**
+
+---

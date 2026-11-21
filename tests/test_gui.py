@@ -100,11 +100,36 @@ class TestSimplifiedOptions:
         app = gui.SmartboardGUI(tk_root)
         for attr in ("clahe_var", "clean_var", "keep_red_var", "keep_green_var"):
             assert not hasattr(app, attr), f"{attr} must be removed (ADR 0005)"
+        # ADR 0009: the DPI slider (and its variable / readout label) is
+        # gone from the GUI
+        for attr in ("dpi_var", "dpi_slider", "dpi_value"):
+            assert not hasattr(app, attr), f"{attr} must be removed (ADR 0009)"
 
     def test_remaining_controls_exist(self, tk_root):
         app = gui.SmartboardGUI(tk_root)
         for attr in ("invert_var", "crop_var", "bg_var", "keep_hex_entry"):
             assert hasattr(app, attr), f"{attr} must still exist"
+
+    def test_no_dpi_reaches_process_pdf(self, tk_root, monkeypatch, tmp_path):
+        """ADR 0009: the GUI must not pass a dpi at all — the pipeline
+        default (150) applies."""
+        calls = []
+
+        def fake_process_pdf(*args, **kwargs):
+            calls.append((args, kwargs))
+            from smartboard_invert.pdfpipeline import ProcessResult
+
+            return ProcessResult(input_path=args[0], output_path=args[1])
+
+        monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
+        app = gui.SmartboardGUI(tk_root)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(_dummy_pdf(tmp_path)))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        _run_start(app)
+        assert calls, "process_pdf was not called"
+        assert "dpi" not in calls[0][1], "GUI must not pass a DPI (ADR 0009)"
 
     def test_keep_colors_reaches_process_pdf_as_red_green(
         self, tk_root, monkeypatch, tmp_path
