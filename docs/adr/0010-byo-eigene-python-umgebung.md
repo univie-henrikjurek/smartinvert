@@ -80,6 +80,20 @@ Alternativen, die verworfen wurden:
 * Tests: `tests/test_starter_byo_env.py` (Linux/macOS; Validierungs- und
   Persistenzverhalten von `start.sh` per Subprocess).
 * Version: `0.9.0-dev` (neues User-Feature).
-* Bekannte Einschränkung: `start.bat` lässt sich in der Linux-Entwicklungsumgebung
-  nicht ausführen — statische Review statt Laufzeittest (dokumentiert in
-  STATUS.md).
+
+## Bekannte Einschränkungen
+
+1. **`start.bat` nur statisch geprüft:** In der Linux-Entwicklungsumgebung
+   nicht ausführbar — Review ohne Laufzeittest.
+2. **Windows: Metazeichen im Pfad:** Pfade, die cmd-Metazeichen enthalten
+   (`&`, `|`, `<`, `>`, `^`), werden nicht unterstützt (Anzeigemeldungen
+   brechen auf; die ENV-Datei wird korrekt geschrieben, da die Metazeichen
+   beim Schreiben escaped werden).
+3. **Windows: 9-Token-Limit beim Flag-Combining:** cmd stellt einem
+   Batch-Skript nur `%1`–`%9` zur Verfügung. Wenn ein Starter-Flag
+   (`--use-env`/`--use-standard`) in der Zeile steht, werden höchstens 9
+   Kommandozeilen-Tokens insgesamt verarbeitet; ohne Starter-Flag gilt der
+   klassische Durchreichungsweg (`%*`, beliebig viele Argumente). Da die
+   Wahl persistent ist, wird das Flag ohnehin nur einmal benötigt.
+4. **Windows: unbalancierte Klammern im Pfad** können das Batch-
+   Fehlerbehandlungs-Block aufbrechen (pathologisch, z. B. `C:\env)1`).

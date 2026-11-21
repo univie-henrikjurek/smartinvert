@@ -187,7 +187,8 @@ The tool itself does **not** need to be installed in your environment.
 ### Activate the mode (one-time)
 
 Point the starter at your environment — the environment's **folder** or the
-Python **executable** both work:
+Python **executable** both work (relative paths are resolved relative to the
+project folder):
 
 ```bash
 # Linux / macOS
@@ -222,7 +223,8 @@ install it — then nothing has changed anywhere.
 ```
 
 This deletes `.smartinvert_env` and restores the usual isolated `.venv/`
-setup (double-clicking `start.bat` works exactly as before).
+setup (double-clicking `start.bat` works exactly as before). The starter
+then continues normally — without further arguments it opens the GUI.
 
 ### What is different in BYO-env mode?
 
@@ -235,6 +237,11 @@ setup (double-clicking `start.bat` works exactly as before).
 - If your environment is moved or its dependencies are removed, the starter
   refuses to start and points you to `--use-standard` (fail-safe: there is no
   silent fallback to the standard setup).
+- **Windows only:** paths containing command-prompt special characters
+  (`&`, `|`, `<`, `>`, `^`) are not supported; and when you combine
+  `--use-env` with tool arguments in a single call, keep the total number of
+  arguments at 9 or fewer (a command-prompt limitation — normally irrelevant
+  because the choice is remembered for later starts).
 
 ---
 

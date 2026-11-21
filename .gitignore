@@ -12,6 +12,7 @@ venv/
 
 # BYO-env choice — local per checkout, never published (ADR 0010)
 .smartinvert_env
+.smartinvert_env.test-backup
 
 # Generated artifacts
 outputs/

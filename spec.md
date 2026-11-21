@@ -342,7 +342,7 @@ User-Anfrage: Power-User sollen ihre eigene Python-Installation / venv für den
 Start nutzen können, statt der isolierten `.venv/`, die der Starter anlegt.
 Grundlage: [ADR 0010](docs/adr/0010-byo-eigene-python-umgebung.md).
 
-Das Tool-Code wird aus dem Checkout geladen (`python -m smartboard_invert …`,
+Der Tool-Code wird aus dem Checkout geladen (`python -m smartboard_invert …`,
 weil das aktuelle Verzeichnis an Position 1 von `sys.path` steht); die fremde
 Umgebung muss nur die vier Laufzeit-Abhängigkeiten enthalten, **nie** das Tool
 selbst — und wird vom Starter **niemals verändert** (keine Installation, keine

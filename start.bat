@@ -26,12 +26,34 @@ echo.
 
 rem ------------------------------------------------ [0] BYO-env mode ------
 rem Parse the starter-level flags --use-env / --use-standard out of the
-rem arguments; everything else is passed to the tool unchanged (reconstructed
-rem in ARGS, so consumed flags never leak into the CLI call).
+rem arguments; everything else is passed to the tool unchanged (kept in
+rem ARGS, so consumed flags never leak into the CLI call).
 set "ENV_FILE=.smartinvert_env"
 set "CUSTOM_PY="
 set "ARGS="
 set "HAD_ARGS=0"
+
+rem Empty command line -> GUI, nothing to parse.
+if "%~1"=="" goto parse_done
+
+rem cmd only exposes %1..%9 to a script, so a starter flag given beyond
+rem the 9th token would be invisible to the shift-based parser below.
+rem Acceptable: the flags are given up front in practice, and once the
+rem choice is stored in .smartinvert_env no flag is needed at all
+rem (known limitation, see ADR 0010).
+set "WANT_BYO=0"
+for %%t in (%*) do (
+    if /i "%%t"=="--use-env" set "WANT_BYO=1"
+    if /i "%%t"=="--use-standard" set "WANT_BYO=1"
+)
+
+if "%WANT_BYO%"=="1" goto parse_loop
+
+rem No starter flags: classic passthrough - keep the command line verbatim
+rem (same tokens and quotes as "%*"), so ANY number of arguments works.
+set "HAD_ARGS=1"
+set "ARGS=%*"
+goto parse_done
 
 :parse_loop
 if "%~1"=="" goto parse_done
@@ -68,7 +90,14 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo PYTHON=%CUSTOM_PY%> "%ENV_FILE%"
+rem escape cmd metacharacters so the choice line is written verbatim
+rem ("^" first, so the escaping itself is not re-escaped)
+set "SAFE=%CUSTOM_PY:^=^^%"
+set "SAFE=%SAFE:&=^&%"
+set "SAFE=%SAFE:|=^|%"
+set "SAFE=%SAFE:<=^<%"
+set "SAFE=%SAFE:>=^>%"
+echo PYTHON=%SAFE%> "%ENV_FILE%"
 echo [env] using your Python environment: %CUSTOM_PY%
 echo [env] remembered in %ENV_FILE% ^(start.bat --use-standard to revert^)
 shift

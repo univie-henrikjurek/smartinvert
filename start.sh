@@ -122,7 +122,9 @@ if [ -z "$CUSTOM_PY" ] && [ -f "$ENV_FILE" ]; then
     echo "hint : run './start.sh --use-standard' to go back to the default." >&2
     exit 1
   fi
-  if ! "$CUSTOM_PY" -c 'import fitz, cv2, numpy, PIL' 2>/dev/null; then
+  # full validation (Python version AND dependencies), symmetric with
+  # start.bat's reuse path
+  if ! validate_python_env "$CUSTOM_PY"; then
     echo "error: stored Python environment is broken: $CUSTOM_PY" >&2
     echo "hint : reinstall the dependencies or run './start.sh --use-standard'." >&2
     exit 1
