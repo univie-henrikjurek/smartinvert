@@ -15,3 +15,6 @@ outputs/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Session memory — stays local, not part of the published repo
+STATUS.md
