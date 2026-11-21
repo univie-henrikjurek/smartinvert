@@ -145,7 +145,7 @@ def test_multipage_mixed(tmp_path):
     src, dst, truths, result = process(tmp_path, pages)
     assert len(result.pages) == 3
     assert result.pages[0].detected and result.pages[0].method == "image-replace"
-    assert result.pages[1].detected and result.pages[1].method == "rerasterize"
+    assert result.pages[1].detected and result.pages[1].method == "vector-invert"
     assert not result.pages[2].detected
     assert result.pages[2].method == "copy"
     a, b = renders(src, dst)
@@ -262,17 +262,18 @@ def test_page_size_preserved(tmp_path):
 
 
 def test_vector_board_like_sample(tmp_path):
-    """Vector-drawn board (like inputs/test.pdf) via the rerasterize path."""
+    """Vector-drawn board (like inputs/test.pdf) via the vector-invert path
+    (ADR 0008): the output stays vector, and the region is inverted exactly."""
     pages = [{"kind": "vector", "rect": (147, 10, 299, 822), "bg": (19, 21, 25)}]
     src, dst, truths, result = process(tmp_path, pages)
     page = result.pages[0]
     assert page.detected, page.message
-    assert page.method == "rerasterize"
+    assert page.method == "vector-invert"
     a, b = renders(src, dst)
     gt = truths[0]["rect_px"]
     diff = cv2.absdiff(a[0], b[0])
     mask = outside_mask(gt, a[0].shape[:2], inflate=8)
-    assert diff[mask].max() <= 8  # reraster tolerance (ADR 0001 D3)
+    assert diff[mask].max() == 0  # vector-invert: outside is pixel-exact
     assert diff[~mask].mean() > 50
     g_in = cv2.cvtColor(a[0], cv2.COLOR_BGR2GRAY)
     g_out = cv2.cvtColor(b[0], cv2.COLOR_BGR2GRAY)
@@ -512,13 +513,19 @@ def assert_crop_matches_faithful(
     rect_px,
     out_w: float = None,
     out_h: float = None,
+    band_px: int = 2,
+    inner_tol: int = 0,
 ) -> None:
     """Compare one cropped page render with the rect slice of the faithful
     (crop=False) render of the same page at the same dpi (ADR 0003, D1/D5).
 
     * The render shape must equal the cropped page size in points at ``DPI``
       (±1 px for MuPDF's MediaBox rounding).
-    * The 2-px-eroded inner area must be pixel-identical (max diff 0).
+    * The ``band_px``-eroded inner area must match within ``inner_tol``
+      (default: pixel-identical — the image-replace/copy/raster-slice
+      contract; ADR 0008 D3's vector-exact clip allows 3 px / 2 levels,
+      because the clip edge and the faithful edge differ by a subpixel AA
+      phase).
     * The full area may only differ in the ≤1-px boundary resampling phase:
       mean diff < 0.5 and < 1 % of the pixels differing.
     """
@@ -538,8 +545,10 @@ def assert_crop_matches_faithful(
         f"faithful slice shape {slice_img.shape} != crop render shape {crop_img.shape}"
     )
     diff = cv2.absdiff(crop_img, slice_img)
-    inner_max = int(diff[2:-2, 2:-2].max())
-    assert inner_max == 0, f"eroded 2px inner must be pixel-identical (max diff {inner_max})"
+    inner_max = int(diff[band_px:-band_px, band_px:-band_px].max())
+    assert inner_max <= inner_tol, (
+        f"eroded {band_px}px inner must match within {inner_tol} (max diff {inner_max})"
+    )
     mean = float(diff.mean())
     assert mean < 0.5, f"full-region mean diff {mean} >= 0.5"
     frac = float((diff.max(axis=2) > 0).mean())
@@ -618,12 +627,14 @@ class TestCropGeometry:
 class TestCropPixelEquivalence:
     """The crop render of a board page must match the rect slice of a
     SEPARATE faithful (crop=False) run on the same input (ADR 0003, D1:
-    vector-exact re-wrap, no re-rasterization).  Covers all three output
-    methods: image-replace, rerasterize, copy (detected, untransformed)."""
+    vector-exact re-wrap, no re-rasterization).  Covers all four output
+    methods: image-replace, vector-invert (ADR 0008, D3: vector-exact clip,
+    raster-slice fallback for rerasterize), copy (detected, untransformed)."""
 
     PAGES = [
         {"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)},
         {"kind": "vector", "rect": (300, 100, 200, 500), "bg": (40, 40, 45)},
+        {"kind": "vector-inline-image", "rect": (100, 150, 300, 400), "bg": (20, 20, 25)},
         {"kind": "blank", "marks": []},
     ]
 
@@ -638,11 +649,19 @@ class TestCropPixelEquivalence:
         return src, dst_crop, dst_faith, truths, res_crop, res_faith
 
     @pytest.mark.parametrize(
-        "page_index, method",
-        [(0, "image-replace"), (1, "rerasterize")],
-        ids=["image-replace", "rerasterize"],
+        "page_index, method, band_px, inner_tol",
+        [
+            (0, "image-replace", 2, 0),
+            # ADR 0008 D3: the vector clip edge differs from the faithful edge
+            # by a subpixel AA phase -> 3 px band, 2 levels
+            (1, "vector-invert", 3, 2),
+            (2, "rerasterize", 2, 0),  # inline image forces the raster fallback
+        ],
+        ids=["image-replace", "vector-invert", "rerasterize"],
     )
-    def test_crop_render_matches_faithful_slice(self, runs, page_index, method):
+    def test_crop_render_matches_faithful_slice(
+        self, runs, page_index, method, band_px, inner_tol
+    ):
         src, dst_crop, dst_faith, truths, res_crop, _ = runs
         pr = res_crop.pages[page_index]
         assert pr.detected and pr.cropped
@@ -660,6 +679,8 @@ class TestCropPixelEquivalence:
             pr.rect_px,
             out_w=out_rect.width,
             out_h=out_rect.height,
+            band_px=band_px,
+            inner_tol=inner_tol,
         )
 
     def test_crop_render_copy_method_matches_faithful(self, tmp_path):
@@ -1233,3 +1254,303 @@ class TestKeepHexPipeline:
         with pytest.raises(SmartboardError):
             process_pdf(src, dst, dpi=DPI, keep_segments=keep_segments)
         assert not dst.exists(), "validation must happen before any output"
+
+
+# --- vector-preserving inversion (ADR 0008) ---------------------------------
+
+
+class TestVectorInvert:
+    """ADR 0008: vector board pages are inverted in the content stream
+    (method ``vector-invert``) instead of being re-rasterized, so the output
+    stays vector-sharp at any DPI; anything the rewrite cannot handle exactly
+    self-heals to the proven raster path."""
+
+    BOARD = (150, 150, 300, 400)
+
+    # -- happy path ---------------------------------------------------------
+
+    def test_vector_board_is_vector_invert(self, tmp_path):
+        pages = [{"kind": "vector", "rect": self.BOARD, "bg": (20, 20, 25)}]
+        src, dst, truths, result = process(tmp_path, pages)
+        pr = result.pages[0]
+        assert pr.detected and pr.method == "vector-invert"
+        doc = fitz.open(str(dst))
+        try:
+            assert doc[0].get_images() == []  # stays vector: no raster embedded
+        finally:
+            doc.close()
+        a, b = renders(src, dst)
+        gt = truths[0]["rect_px"]
+        diff = cv2.absdiff(a[0], b[0])
+        mask = outside_mask(gt, a[0].shape[:2], inflate=8)
+        assert diff[mask].max() == 0  # outside is pixel-exact
+        assert diff[~mask].mean() > 50  # inside transformed
+
+    def test_xobj_board_is_vector_invert(self, tmp_path):
+        """Editor-style export: the board only exists inside a Form XObject."""
+        pages = [{"kind": "xobj", "rect": self.BOARD, "bg": (20, 20, 25)}]
+        src, dst, truths, result = process(tmp_path, pages)
+        pr = result.pages[0]
+        assert pr.detected and pr.method == "vector-invert"
+        doc = fitz.open(str(dst))
+        try:
+            assert doc[0].get_images() == []
+        finally:
+            doc.close()
+        a, b = renders(src, dst)
+        gt = truths[0]["rect_px"]
+        diff = cv2.absdiff(a[0], b[0])
+        mask = outside_mask(gt, a[0].shape[:2], inflate=8)
+        assert diff[mask].max() == 0
+        assert diff[~mask].mean() > 50
+
+    def test_offset_mediabox_vector_invert(self, tmp_path):
+        pages = [
+            {"kind": "vector", "rect": self.BOARD, "bg": (20, 20, 25), "offset": (100, 100)}
+        ]
+        src, dst, truths, result = process(tmp_path, pages)
+        pr = result.pages[0]
+        assert pr.detected and pr.method == "vector-invert"
+        a, b = renders(src, dst)
+        gt = truths[0]["rect_px"]
+        diff = cv2.absdiff(a[0], b[0])
+        mask = outside_mask(gt, a[0].shape[:2], inflate=8)
+        assert diff[mask].max() == 0
+        assert diff[~mask].mean() > 50
+
+    def test_keep_colors_vector(self, tmp_path):
+        """A red marker on the board keeps its colour (keep-exclusion)."""
+        pages = [
+            {
+                "kind": "vector",
+                "rect": self.BOARD,
+                "bg": (20, 20, 25),
+                "marks": [((200, 200, 40, 40), (0, 0, 255))],  # BGR: pure red
+            }
+        ]
+        src, dst, truths, result = process(tmp_path, pages, keep_colors={"red"})
+        assert result.pages[0].method == "vector-invert"
+        b = renders(src, dst)[1]
+        # the mark sits at (200..240, 200..240) pt inside the board
+        x0, y0 = int(205 * PX_PER_PT), int(205 * PX_PER_PT)
+        x1, y1 = int(235 * PX_PER_PT), int(235 * PX_PER_PT)
+        patch = b[0][y0:y1, x0:x1]
+        r = patch[:, :, 2].mean()
+        g = patch[:, :, 1].mean()
+        bl = patch[:, :, 0].mean()
+        assert r > 200 and g < 60 and bl < 60  # still (close to) red
+
+    def test_bg_target_vector(self, tmp_path):
+        """Flat board background remaps exactly onto the target colour."""
+        pages = [{"kind": "vector", "rect": self.BOARD, "bg": (20, 20, 25), "lines": False}]
+        src, dst, truths, result = process(tmp_path, pages, bg_target=(255, 255, 255))
+        assert result.pages[0].method == "vector-invert"
+        b = renders(src, dst)[1]
+        gt = truths[0]["rect_px"]
+        box = b[0][ int(gt[1]) + 10 : int(gt[3]) - 10, int(gt[0]) + 10 : int(gt[2]) - 10 ]
+        assert cv2.cvtColor(box, cv2.COLOR_BGR2GRAY).mean() > 250  # -> white
+
+    def test_invert_off_copies_vector_page(self, tmp_path):
+        pages = [{"kind": "vector", "rect": self.BOARD, "bg": (20, 20, 25)}]
+        src, dst, truths, result = process(tmp_path, pages, invert=False)
+        pr = result.pages[0]
+        assert pr.detected and pr.method == "copy"
+        a, b = renders(src, dst)
+        assert cv2.absdiff(a[0], b[0]).max() == 0  # lossless copy
+        doc = fitz.open(str(dst))
+        try:
+            assert doc[0].get_images() == []
+        finally:
+            doc.close()
+
+    # -- the 300-DPI user scenario (lecture notes) --------------------------
+
+    def test_300dpi_lecture_stays_vector(self, tmp_path):
+        """The motivating case: vector lecture notes at 300 DPI must come out
+        vector (no embedded raster, text still extractable), cropped to the
+        board."""
+        pages = [
+            {
+                "kind": "vector",
+                "rect": (100, 100, 400, 600),
+                "bg": (18, 20, 24),
+                "text": [
+                    (140, 180, "1. Theorem: P = NP is open"),
+                    (140, 240, "Proof. Suppose there exists an algorithm..."),
+                ],
+            }
+        ]
+        src = tmp_path / "in.pdf"
+        make_pdf(src, pages)
+        dst = tmp_path / "out.pdf"
+        result = process_pdf(src, dst, dpi=300, crop=True)
+        pr = result.pages[0]
+        assert pr.detected and pr.method == "vector-invert" and pr.cropped
+        doc = fitz.open(str(dst))
+        try:
+            page = doc[0]
+            assert page.get_images() == []  # no raster
+            assert len(page.get_drawings()) > 0  # vectors remain
+            assert "Theorem: P = NP is open" in page.get_text()  # text intact
+            assert page.rect.width == pytest.approx(400.0, abs=1.5)
+            assert page.rect.height == pytest.approx(600.0, abs=1.5)
+        finally:
+            doc.close()
+
+    # -- vector-exact crop (ADR 0008, D3) ------------------------------------
+
+    def _run_crop(self, tmp_path, pages):
+        src = tmp_path / "in.pdf"
+        make_pdf(src, pages)
+        dst = tmp_path / "out.pdf"
+        result = process_pdf(src, dst, dpi=DPI, crop=True)
+        return src, dst, result
+
+    def test_crop_vector_exact(self, tmp_path):
+        src, dst, result = self._run_crop(
+            tmp_path, [{"kind": "vector", "rect": self.BOARD, "bg": (20, 20, 25)}]
+        )
+        pr = result.pages[0]
+        assert pr.detected and pr.cropped and pr.method == "vector-invert"
+        doc = fitz.open(str(dst))
+        try:
+            page = doc[0]
+            assert page.get_images() == []  # still vector after the crop
+            assert page.rect.width == pytest.approx(300.0, abs=1.5)
+            assert page.rect.height == pytest.approx(400.0, abs=1.5)
+            out_rect = page.rect
+        finally:
+            doc.close()
+        crop_imgs = pdf_to_images(dst, dpi=DPI)
+        process_pdf(src, tmp_path / "faith.pdf", dpi=DPI, crop=False)
+        faith_imgs = pdf_to_images(tmp_path / "faith.pdf", dpi=DPI)
+        assert_crop_matches_faithful(
+            crop_imgs[0],
+            faith_imgs[0],
+            pr.rect_px,
+            out_w=out_rect.width,
+            out_h=out_rect.height,
+            band_px=3,
+            inner_tol=2,
+        )
+
+    def test_crop_vector_offset(self, tmp_path):
+        """Offset MediaBox + vector board: the clip must still be exact."""
+        src, dst, result = self._run_crop(
+            tmp_path,
+            [
+                {
+                    "kind": "vector",
+                    "rect": self.BOARD,
+                    "bg": (20, 20, 25),
+                    "offset": (100, 100),
+                }
+            ],
+        )
+        pr = result.pages[0]
+        assert pr.detected and pr.cropped and pr.method == "vector-invert"
+        doc = fitz.open(str(dst))
+        try:
+            page = doc[0]
+            assert page.get_images() == []
+            assert page.rect.width == pytest.approx(300.0, abs=1.5)
+            assert page.rect.height == pytest.approx(400.0, abs=1.5)
+            out_rect = page.rect
+        finally:
+            doc.close()
+        crop_imgs = pdf_to_images(dst, dpi=DPI)
+        process_pdf(src, tmp_path / "faith.pdf", dpi=DPI, crop=False)
+        faith_imgs = pdf_to_images(tmp_path / "faith.pdf", dpi=DPI)
+        assert_crop_matches_faithful(
+            crop_imgs[0],
+            faith_imgs[0],
+            pr.rect_px,
+            out_w=out_rect.width,
+            out_h=out_rect.height,
+            band_px=3,
+            inner_tol=2,
+        )
+
+    # -- self-healing raster fallback (ADR 0008, D2) --------------------------
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "vector-inline-image",
+            "vector-shading",
+            "vector-extgstate",
+            "vector-rotated-text",
+        ],
+    )
+    def test_fallback_to_rerasterize(self, tmp_path, kind):
+        """A construct the v1 rewrite refuses must fall back to the proven
+        raster path — still transforming the board correctly."""
+        pages = [{"kind": kind, "rect": self.BOARD, "bg": (20, 20, 25)}]
+        src, dst, truths, result = process(tmp_path, pages)
+        pr = result.pages[0]
+        assert pr.detected and pr.method == "rerasterize"  # self-healed
+        a, b = renders(src, dst)
+        gt = truths[0]["rect_px"]
+        diff = cv2.absdiff(a[0], b[0])
+        mask = outside_mask(gt, a[0].shape[:2], inflate=8)
+        assert diff[mask].max() <= 8
+        assert diff[~mask].mean() > 30
+        doc = fitz.open(str(dst))
+        try:
+            assert len(doc[0].get_images()) == 1  # full-page raster (fallback)
+        finally:
+            doc.close()
+
+
+# ---------------------------------------------------------------------------
+# regression against the project's own sample (inputs/test.pdf)
+# ---------------------------------------------------------------------------
+
+
+class TestRealSampleVectorInvert:
+    """Regression on ``inputs/test.pdf`` — the project's own sample, a real
+    app export.
+
+    The page has 1229 vector paths (no images, no text operators) and:
+
+    * a harmless identity ExtGState (``/GSa``, ``/ca 1 /CA 1 /SMask /None``)
+      applied ~1230 times (once per path),
+    * colours set through a *named* DeviceRGB space (``/CSp cs`` + ``scn``),
+    * a flipped app-space CTM (``0.24 0 0 -0.24 10.08 831.92``),
+    * an even-odd clip (``W* n``) and even-odd fills (``f*``).
+
+    Before the ADR 0008 gs/scn/cs extensions (2026-11-19) this document hit
+    ``VectorUnsupported`` and fell back to ``rerasterize`` → the output was
+    a single full-page bitmap → pixelated at 300 DPI (user report).  This
+    test pins the vector path end-to-end, including the vector-exact crop
+    stage, on the real document.
+    """
+
+    SAMPLE = Path(__file__).resolve().parent.parent / "inputs" / "test.pdf"
+
+    def test_sample_uses_vector_path(self, tmp_path):
+        assert self.SAMPLE.is_file(), "inputs/test.pdf missing from the repo"
+        dst = tmp_path / "sample_out.pdf"
+        result = process_pdf(self.SAMPLE, dst, dpi=150)
+        pr = result.pages[0]
+        assert pr.detected
+        assert pr.method == "vector-invert", (
+            "the sample must take the vector path (harmless identity "
+            f"ExtGState + named DeviceRGB space), got {pr.method}"
+        )
+        assert pr.cropped  # production default crop=True → vector-exact crop
+        doc = fitz.open(str(dst))
+        try:
+            page = doc[0]
+            # the core of the user complaint: no bitmap in the output
+            assert len(page.get_image_info()) == 0
+            # all ~1229 vector paths survive
+            assert len(page.get_drawings()) >= 1000
+            # the dark board background is now light (complement)
+            pix = page.get_pixmap(dpi=72)
+            img = np.frombuffer(pix.samples, np.uint8).reshape(
+                pix.height, pix.width, pix.n
+            )
+            assert img[:, :, :3].astype(float).mean() > 180
+        finally:
+            doc.close()

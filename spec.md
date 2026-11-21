@@ -262,3 +262,76 @@ Grundlage: [ADR 0007](docs/adr/0007-crop-render-slice-und-gui-ordner-batch.md).
 *Phase 6 addendum:* 2026‑11‑16, **Supervisor**
 
 ---
+
+## Phase 7 (2026‑11‑17): Vektorerhaltende Inversion (v0.8.0)
+
+Phase 7 erfüllt den User-Wunsch „das SVG, das von der Schrift gespeichert
+wird, komplett übernehmen": Vektor-Board-Seiten (z. B. exportierte
+Vorlesungs-Skripte) kamen bisher über `rerasterize` → auf 300 DPI pixelig,
+obwohl das Original scharf ist. Ab jetzt werden sie **vektorerhaltend**
+invertiert. Grundlage:
+[ADR 0008](docs/adr/0008-vektorerhaltende-inversion.md).
+
+### 7.1 Neue/veränderte Anforderungen
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P7‑FR‑1** | Neue Methode `vector-invert` | Vektor-Board-Seiten ohne Bild-XObject werden vor dem Raster-Fallback per Content-Stream-Umschreibung invertiert: die Farb-Operatoren des Fidelity-Copy-XObject-Baums (Form-`/fzFrm0` → `/fullpage` → evtl. verschachtelte Forms) werden pro Paint (Pfad-Füllung/-Stroke, Text) geometrisch entschieden (BBox × CTM-Kette vs. `rect_pt`: außerhalb → behalten; nah-weiße Vollläche → Background-Plate, behalten; innen/straddling → invertieren). Farb-Mathematik = exakt dieselbe wie Raster-Pfad (`floor(v·255)`-Quantisierung, `255−v` / bg_target-Remap mit gleichem `B_c`, Keep-Ausschlüsse `color_mask`/`hex_keep_mask` auf 1×1). Original-Farb-Operanden werden **nie** umgeschrieben — bei Widerspruch wird ein expliziter Farb-Operator vor dem ersten Operand des Paints eingeschoben (bei Text vor dem String-/Array-Operand, sonst bricht MuPDFs Text-Extraktion). Geometrie, Texte, Fonts bleiben 1:1 Vektor. `PageResult.method = "vector-invert"`. |
+| **P7‑FR‑2** | Selbstheilender Raster-Fallback | Alles, was die v1-Umschreibung nicht exakt vermag (`VectorUnsupported`: Inline-Images `BI`, Shadings `sh`, ExtGState `gs`, `scn/SCN`, nicht-Device-Farbräume `cs/CS`, rotierte/schiefe Text-Matrizen, Image-XObject innerhalb/nah am Board), schlägt die Seite auf den bewährten Raster-Pfad um (`method = "rerasterize"`, volle D2-/P2-Außengarantien). Die Ausgabe kann nie schlechter werden als ohne P7. |
+| **P7‑FR‑3** | Verifikation gegen Raster-Grundwahrheit (D2) | Nach dem Write-back wird die Seite gerendert und mit dem Raster-Transform-Ergebnis (Original + Inversion nur in `rect_px`) verglichen; ein ±AA-Band um `rect_px` (`max(4, dpi/36+2)` px) ist ausgenommen (fundamentaler Semantik-Unterschied an der Board-Kante), Rest: max-Diff ≤ 3. `_verify_page` exkludiert für `vector-invert` dasselbe Band (sonst Toleranz 0). |
+| **P7‑FR‑4** | Vektor-exakter Crop (D3) | Die Crop-Stage bevorzugt für `vector-invert`-Seiten `show_pdf_page(clip=rect_pt)` (Clip auf das Render-Pixel-Gitter quantisiert) — bleibt Vektor, empirisch pixel-exakt (inkl. Offset-MediaBox). Sicherheitsnetz: Vergleich gegen die Render-Slice-Grundwahrheit (3-px-Rand, max ≤ 2); bei Abweichung → Raster-Slice (P6‑FR‑1). |
+| **P7‑FR‑5** | Keine neuen Optionen | Der Vektor-Weg ist automatisch (Conditionen + Fallback); kein CLI-Flag, keine GUI-Checkbox (ADR 0005-Philosophie). Sichtbar nur über `PageResult.method` und Logs. |
+
+### 7.2 Abweichungen (dokumentiert)
+
+| # | Abweichung | Begründung |
+|---|------------|------------|
+| **P7‑D‑1** | P6‑D‑1 („Vektor innerhalb des Rechtecks wird gerastert") gilt nur noch für den **Raster-Fallback**; die primäre Vektor-Seite ist jetzt vektor-exakt transformiert *und* gecropt (P7‑FR‑1/4). | User-Feature-Wunsch (scharfe Ausgabe statt 300-DPI-Raster). |
+| **P7‑D‑2** | CMYK-Flächen laufen über die Standard-Subtraktiv-Konversion (RGB-Zwischenstufe); die Doppelkonversion ist auf 8-bit nicht injektiv (stabil innerhalb 1 Level). | Von der D2-Toleranz (≤ 3) abgedeckt; DeviceRGB/DeviceGray (Praxisfall) sind exakt. |
+
+---
+
+*Phase 7 addendum:* 2026‑11‑17, **Supervisor**
+
+---
+
+### 7.3 Revision (2026‑11‑19) — App-Export-PDFs (`gs`/`scn`/benannte Farbräume)
+
+User-Test mit dem Eigensample `inputs/test.pdf` (1229 Vektorpfade) fiel
+trotz v0.8.0-dev in den Raster-Fallback → Output pixelig. Ursache: der
+Rewriter lehnte harmlose, aber in App-Exports übliche Konstrukte ab.
+Revision (ADR 0008, „Revision 2026‑11‑19"; diese Punkte ersetzen die
+betreffenden Formulierungen in P7‑FR‑2/4):
+
+| # | Anforderung (revidiert) | Beschreibung |
+|---|-------------|--------------|
+| **P7‑FR‑2r** | Self-healing Fallback — revidierte Abweisung | `gs` wird nur abgewiesen, wenn der ExtGState **echte** Farb-Semantik hat (`/ca`/`/CA` < 1, `/SMask` ≠ `/None`, `/BM` ≠ `/Normal`); Identitäts-ExtGState (App-Export-Usus) wird durchgelassen. `cs`/`CS` akzeptiert Device-Räume auch **benannt** über `/Resources /ColorSpace` (Literal + indirekte Referenz); `scn`/`SCN` gilt in getrackten Device-Räumen. Abgewiesen bleiben: Inline-Images, Shadings, ICCBased/Pattern-Farbräume, rotierte/schiefe Texte, Bild im Board. |
+| **P7‑FR‑4r** | Vektor-Crop-Kontrakt revidiert | Vergleich gegen die Render-Slice-Grundwahrheit mit „Geometrie + grobe Fidelity": max-Diff ≤ 32 (schlechtester Pixel) **und** Anteil abweichender Pixel ≤ 0,1 % — ein Clip-Import rastert Vektor-Kanten in leicht anderer Subpixel-Phase (empirisch: max-Diff 16 auf 0,003 % der Pixel, wahrnehmungsunwesentlich). Systematischer Fehlauschnitt scheitert an beiden Caps → Raster-Slice. |
+| **P7‑FR‑6** | Regression am echten Sample | `tests/test_pipeline.py::TestRealSampleVectorInvert` läuft `inputs/test.pdf` end-to-end: `method=vector-invert`, 0 Bild-XObjects im Output, ≥ 1000 Vektor-Drawings, heller Board-Hintergrund. |
+
+---
+
+*Phase 7 revision addendum:* 2026‑11‑19, **Supervisor**
+
+---
+
+## Phase 8 — GUI ohne DPI-Regler (v0.8.0, 2026-11-19)
+
+User-Anfrage: „DPI Regler entfernen, den brauchen wir nicht mehr im
+GUI." Grundlage: [ADR 0009](docs/adr/0009-gui-dpi-regler-entfernt.md).
+Seit P7 (vector-invert) bestimmt das Processing-DPI die Qualität von
+Vektor-Content nicht mehr; der Regler ist verlässlich überflüssig
+(ADR-0005-Philosophie: weniger Optionen).
+
+### 8.1 Anforderungen
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P8‑FR‑1** | GUI ohne DPI-Option | Der DPI-Regler (Widget, Variable, Readout, Callback) wird aus dem GUI entfernt. Die GUI rendert die Vorschau und verarbeitet mit dem Pipeline-Default (**150 dpi**, Signature-Default von `pdf_to_images`/`process_pdf`); es wird kein `dpi`-Parameter mehr übergeben. |
+| **P8‑FR‑2** | CLI unverändert | Das CLI-Flag `--dpi` (20–600) und die Config-File-Option `dpi` bleiben für Power-User erhalten. |
+
+---
+
+*Phase 8 addendum:* 2026‑11‑19, **Supervisor**
+
+---

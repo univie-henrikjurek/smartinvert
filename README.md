@@ -26,9 +26,12 @@ untouched.*
 - **Strictly selective inversion** — the strict pixel transformation
   `255 − v` is applied inside the detected rectangle only.
 - **Page-faithful output** — original page size (MediaBox), board position, and
-  page order are preserved. Three output strategies, chosen per page:
-  lossless page copy, in-place board-image replacement (lossless PNG), or
-  re-embedding of a rendered page at the original size (for vector content).
+  page order are preserved. Four output strategies, chosen per page:
+  lossless page copy, in-place board-image replacement (lossless PNG),
+  **vector-preserving inversion** (colour operators rewritten in the content
+  stream, so vector/SVG board content stays vector-sharp at any DPI — since
+  v0.8.0), or re-embedding of a rendered page at the original size (raster
+  fallback).
 - **Built-in verification** — every processed page is re-rendered and compared
   against the original; pixels outside the region must be unchanged (the
   numbers are logged and available in the API).
@@ -53,13 +56,22 @@ untouched.*
    Marker colours can be preserved and left un-inverted
    (`--keep-colors`; default `red,green`, since v0.5.0), and explicit hex
    colours / ranges can be excluded as well (`--keep-hex`, since v0.6.0).
-3. **Output** — one of the three strategies above is applied. Since v0.7.1
-   (ADR 0006) the finished document is afterwards re-wrapped **by default**
-   (ADR 0003) so every page with a detected board is sized to exactly that
-   rectangle — the page boundaries contain only the visible board area
-   (GUI checkbox „Auf Board zuschneiden (Rand entfernen)", enabled by
-   default; `--no-crop` / unchecking it keeps the unchanged page-faithful
-   output). Pages without a board keep their full size.
+3. **Output** — one of the four strategies above is applied. **Vector board
+   pages** (the board is drawn with vector paths, e.g. an exported
+   lecture/SVG document) are inverted *in the content stream* — the colour
+   operators are rewritten per paint while geometry, text, and fonts stay
+   vector, so the result is sharp at any DPI instead of a rasterised bitmap
+   (ADR 0008, `method = vector-invert`). Anything the rewrite cannot handle
+   exactly (transparency, shadings, inline images, …) self-heals to the
+   raster fallback, so output can never degrade. For those vector pages the
+   default crop is likewise **vector-exact** (a content-stream clip instead
+   of a rendered slice). Since v0.7.1 (ADR 0006) the finished document is
+   afterwards re-wrapped **by default** (ADR 0003) so every page with a
+   detected board is sized to exactly that rectangle — the page boundaries
+   contain only the visible board area (GUI checkbox „Auf Board zuschneiden
+   (Rand entfernen)", enabled by default; `--no-crop` / unchecking it keeps
+   the unchanged page-faithful output). Pages without a board keep their full
+   size.
 4. **Verification & debug** — the output page is re-rendered at the same DPI
    and compared with the input (max/mean diff outside and inside the region);
    `--debug` writes per-page composites
@@ -178,7 +190,6 @@ start.bat         # Windows
 - **Output (optional)** — destination file/folder; leave empty for the default
   `<name>_inverted.pdf` next to the input (folder input requires an output
   folder)
-- **DPI** slider (default 150; raise to 300 for sharper results)
 - **Auf Board zuschneiden (Rand entfernen)** — sizes each page with a
   detected board to exactly that rectangle, removing the surrounding page
   margin (default: on since v0.7.1 — the page then contains only the

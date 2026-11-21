@@ -5,7 +5,11 @@ The GUI mirrors the CLI options but presents them in a graphical form:
 * File chooser for the input PDF (or a folder: all ``*.pdf`` files in it
   are processed into the chosen output folder, like the CLI batch —
   ADR 0007, D2).
-* DPI slider (50‑300).
+* A fixed internal rendering DPI (the pipeline default of 150) — the DPI
+  slider was removed in v0.8.0 (ADR 0009): with vector-preserving
+  inversion the output quality no longer depends on the processing DPI,
+  and for raster content the default is sufficient.  The CLI ``--dpi`` is
+  unaffected.
 * Checkboxes for *Invert* and *Crop to board* (ADR 0005: the legacy CLAHE /
   noise-cleaning / red / green checkboxes were removed).
 * *Target background* combobox (complement or pure white).
@@ -31,7 +35,6 @@ from tkinter import (
     Button,
     Checkbutton,
     IntVar,
-    DoubleVar,
     StringVar,
     TclError,
     filedialog,
@@ -94,34 +97,20 @@ class SmartboardGUI:
         ).pack(anchor="w", padx=12)
 
         # ---------- Options ----------
+        # ADR 0009: no DPI control — the GUI processes at the pipeline
+        # default (150 dpi); the CLI --dpi remains for power users.
         opts_frame = Frame(self.master)
         opts_frame.pack(fill="x", padx=10, pady=5)
-        # DPI slider (with a live value readout so the position is never a
-        # guess)
-        Label(opts_frame, text="DPI:").grid(row=0, column=0, sticky="w")
-        self.dpi_var = DoubleVar(value=150)
-        self.dpi_value = Label(opts_frame, text="150", width=4, anchor="e")
-        self.dpi_slider = ttk.Scale(
-            opts_frame,
-            from_=50,
-            to=300,
-            orient="horizontal",
-            variable=self.dpi_var,
-            command=self._on_dpi_change,
-        )
-        self.dpi_slider.grid(row=0, column=1, sticky="ew", padx=5)
-        self.dpi_value.grid(row=0, column=2, sticky="w", padx=(4, 0))
-        opts_frame.columnconfigure(1, weight=1)
         # Checkboxes (ADR 0005: CLAHE / noise cleaning / red / green
         # checkboxes removed – the hex field is the colour fine control)
         self.invert_var = IntVar(value=1)
-        Checkbutton(opts_frame, text="Invert colours", variable=self.invert_var).grid(row=1, column=0, columnspan=2, sticky="w")
+        Checkbutton(opts_frame, text="Invert colours", variable=self.invert_var).grid(row=0, column=0, columnspan=2, sticky="w")
         # crop is ON by default (ADR 0006, v0.7.1): the page should contain
         # only the visible board area
         self.crop_var = IntVar(value=1)
-        Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=2, column=0, columnspan=2, sticky="w")
+        Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=1, column=0, columnspan=2, sticky="w")
         # Target background (v0.5.0)
-        Label(opts_frame, text="Zielhintergrund:").grid(row=3, column=0, sticky="w")
+        Label(opts_frame, text="Zielhintergrund:").grid(row=2, column=0, sticky="w")
         self.bg_var = StringVar(value=BG_TARGET_CHOICES[0])
         # readonly by design; _reset_ui() restores the state after the
         # generic enable/disable walk of _set_controls_state()
@@ -132,17 +121,17 @@ class SmartboardGUI:
             state="readonly",
             width=28,
         )
-        self.bg_combo.grid(row=3, column=1, columnspan=2, sticky="w", padx=5)
+        self.bg_combo.grid(row=2, column=1, columnspan=2, sticky="w", padx=5)
         # Explicit hex colours / ranges left un-inverted (ADR 0004); empty =
         # off.  Parsed in the main thread before the worker starts (see
         # _parse_keep_hex); the field is intentionally NOT cleared after a run.
-        Label(opts_frame, text="Zusätzliche Hex-Farben:").grid(row=4, column=0, sticky="w")
+        Label(opts_frame, text="Zusätzliche Hex-Farben:").grid(row=3, column=0, sticky="w")
         self.keep_hex_entry = Entry(opts_frame, width=44)
-        self.keep_hex_entry.grid(row=4, column=1, columnspan=2, sticky="w", padx=5)
+        self.keep_hex_entry.grid(row=3, column=1, columnspan=2, sticky="w", padx=5)
         Label(
             opts_frame,
             text="(z.B. FF0000, 00FF00, 000001-0000FF — leer = aus; rot/grün bleiben immer erhalten)",
-        ).grid(row=5, column=0, columnspan=3, sticky="w")
+        ).grid(row=4, column=0, columnspan=3, sticky="w")
 
         # ---------- Preview ----------
         preview_frame = Frame(self.master)
@@ -157,10 +146,6 @@ class SmartboardGUI:
         Button(run_frame, text="Run", command=self.start_processing).pack(side="left")
         self.progress = ttk.Progressbar(run_frame, orient="horizontal", mode="determinate")
         self.progress.pack(fill="x", expand=True, side="left", padx=5)
-
-    def _on_dpi_change(self, _value) -> None:
-        """Keep the DPI value label in sync with the slider."""
-        self.dpi_value.configure(text=str(int(float(self.dpi_var.get()))))
 
     def _transform_options(self) -> dict:
         """Current transformation options (target background + kept colours).
@@ -240,7 +225,8 @@ class SmartboardGUI:
             keep_segments = self._parse_keep_hex()
             if keep_segments is None:
                 return
-            images = processing.pdf_to_images(pdf_path, dpi=int(self.dpi_var.get()))
+            # ADR 0009: fixed internal DPI (pdf_to_images default = 150)
+            images = processing.pdf_to_images(pdf_path)
             if not images:
                 raise SmartboardError("No pages rendered")
             first = images[0]
@@ -299,8 +285,8 @@ class SmartboardGUI:
             return
         # Read the Tk variables in the main thread (Tk thread-safety) and hand
         # plain values to the worker.
+        # ADR 0009: no "dpi" here — process_pdf's default (150) applies.
         options = {
-            "dpi": int(self.dpi_var.get()),
             "invert": bool(self.invert_var.get()),
             "crop": bool(self.crop_var.get()),
             "keep_segments": keep_segments,
@@ -364,7 +350,6 @@ class SmartboardGUI:
                     last_result = process_pdf(
                         src,
                         dst,
-                        dpi=options["dpi"],
                         invert=options["invert"],
                         crop=options["crop"],
                         bg_target=options.get("bg_target"),

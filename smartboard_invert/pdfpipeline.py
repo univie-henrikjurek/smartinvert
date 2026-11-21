@@ -14,17 +14,23 @@ re-wraps the document so every page with a detected board is sized to
 exactly that rectangle (ADR 0003); pages without a board keep their full
 size.
 
-Three output methods exist per page (see ADR 0001, D2):
+Four output methods exist per page (see ADR 0001, D2; ADR 0008):
 
 ``copy``
     No region detected – the page is copied losslessly (``show_pdf_page``).
 ``image-replace``
     The board is an image XObject – the image is extracted, inverted inside
     the detected rectangle, re-encoded losslessly (PNG) and replaced in place.
+``vector-invert``
+    The board content is vector – the colour operators of the page's
+    content stream (and its Form-XObject tree) are rewritten so the
+    transformation happens at the vector level; geometry, text and fonts
+    stay vector-exact (ADR 0008).  Chosen automatically whenever the page
+    content allows it; anything unsupported falls back to ``rerasterize``.
 ``rerasterize``
-    No suitable image XObject (e.g. vector content) – the page is rendered,
-    inverted inside the rectangle and re-embedded at the **original** page
-    size.
+    No suitable image XObject and vector inversion not applicable – the
+    page is rendered, inverted inside the rectangle and re-embedded at the
+    **original** page size.
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ from typing import AbstractSet, Callable, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from . import processing
+from . import processing, vectorops
 from .detection import DetectionResult, Rect, clamp_rect, detect_smartboard_region, rect_overlap_fraction
 from .processing import HexSegment, KEEPABLE_COLORS, SmartboardError, fitz
 
@@ -54,7 +60,7 @@ class PageResult:
 
     page_index: int  # 0-based
     detected: bool
-    #: "copy" | "image-replace" | "rerasterize"
+    #: "copy" | "image-replace" | "vector-invert" | "rerasterize"
     method: str = "copy"
     #: Detected rectangle in render (pixel) coordinates at the used DPI.
     rect_px: Optional[Rect] = None
@@ -316,6 +322,7 @@ def _process_page(
 
     # 2) prefer replacing the board image XObject ---------------------------
     replaced = False
+    new_page = None
     candidate = _find_board_image(page, rect_pt)
     if candidate is not None:
         new_page = _add_page_copy(out_doc, src, pno, page_rect)
@@ -329,8 +336,29 @@ def _process_page(
             keep_colors=keep_colors,
             keep_segments=keep_segments,
         )
-        if not replaced:
-            # fall back: clear the copied content, embed the full-page image
+    if not replaced:
+        if new_page is None:
+            new_page = _add_page_copy(out_doc, src, pno, page_rect)
+        # 3) vector-preserving inversion (ADR 0008) — automatically, with a
+        # self-healing raster fallback for anything it cannot handle exactly.
+        vector_ok = False
+        if invert:
+            vector_ok = _try_vector_invert(
+                out_doc,
+                new_page,
+                rect_pt=rect_pt,
+                rect_px=rect_px,
+                img_orig=img_orig,
+                dpi=dpi,
+                bg_target=bg_target,
+                keep_colors=keep_colors,
+                keep_segments=keep_segments,
+            )
+        if vector_ok:
+            pr.method = "vector-invert"
+        else:
+            # raster fallback: clear the copied content, embed the full-page
+            # image (the proven ADR 0001 behaviour)
             _clear_page(new_page, out_doc)
             processed = _transform_render(
                 img_orig, rect_px, invert,
@@ -338,16 +366,9 @@ def _process_page(
                 keep_segments=keep_segments,
             )
             _embed_full_page_image(new_page, page_rect, processed)
+            pr.method = "rerasterize"
     else:
-        new_page = out_doc.new_page(width=page_rect.width, height=page_rect.height)
-        processed = _transform_render(
-            img_orig, rect_px, invert,
-            bg_target=bg_target, keep_colors=keep_colors,
-            keep_segments=keep_segments,
-        )
-        _embed_full_page_image(new_page, page_rect, processed)
-
-    pr.method = "image-replace" if replaced else "rerasterize"
+        pr.method = "image-replace"
     logger.info(
         "Page %d: smartboard detected (confidence %.2f) – method=%s rect_pt=(%s)",
         pno + 1,
@@ -640,6 +661,99 @@ def _try_image_replace(
 
 
 # ---------------------------------------------------------------------------
+# vector-preserving inversion (ADR 0008)
+# ---------------------------------------------------------------------------
+
+
+def _try_vector_invert(
+    out_doc,
+    page,
+    *,
+    rect_pt: Tuple[float, float, float, float],
+    rect_px: Rect,
+    img_orig: np.ndarray,
+    dpi: int,
+    bg_target: Optional[Tuple[int, int, int]],
+    keep_colors: AbstractSet[str],
+    keep_segments: "Tuple[HexSegment, ...]" = (),
+) -> bool:
+    """Try the vector-preserving inversion of *page* (ADR 0008, D1/D2).
+
+    Rewrites the colour operators of the page's content stream and its
+    Form-XObject tree (per-colour math identical to the raster path), then
+    verifies the result against the raster ground truth (everything outside
+    the board-edge AA band must match within 3 levels).  Returns True and
+    leaves the page rewritten on success; any failure (unsupported
+    construct, verification mismatch, write-back error) returns False so
+    the caller falls back to the raster path.
+    """
+    h, w = img_orig.shape[:2]
+    x0, y0, x1, y1 = clamp_rect(rect_px, w, h)
+    region = img_orig[y0:y1, x0:x1]
+    transform = vectorops.FlatColorTransform(
+        bg_target,
+        keep_colors,
+        keep_segments,
+        vectorops.board_bg_levels(region) if bg_target is not None else None,
+    )
+    band_px = vectorops.aa_band_px(dpi)
+    try:
+        results = vectorops.rewrite_page_tree(
+            out_doc,
+            page,
+            transform,
+            board_rect=tuple(float(v) for v in rect_pt),
+            page_size=(page.rect.width, page.rect.height),
+            tol_pt=band_px * 72.0 / dpi,
+        )
+    except vectorops.VectorUnsupported as e:
+        logger.debug("vector invert not applicable: %s", e)
+        return False
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("vector invert failed unexpectedly: %s", e)
+        return False
+    # Write back only after the whole tree was rewritten without error.
+    try:
+        for kind, xref, data in results:
+            if kind == "page":
+                xref_new = out_doc.get_new_xref()
+                out_doc.update_object(xref_new, "<< /Length 0 >>")
+                out_doc.update_stream(xref_new, data)
+                page.set_contents(xref_new)
+            else:
+                out_doc.update_stream(int(xref), data)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("vector invert write-back failed: %s", e)
+        return False
+    # D2: verification against the raster ground truth.
+    expected = img_orig.copy()
+    expected[y0:y1, x0:x1] = processing.invert_or_remap(
+        region,
+        bg_target=bg_target,
+        keep_colors=keep_colors,
+        keep_segments=keep_segments,
+    )
+    got = _render_page(page, dpi)
+    if got.shape[:2] != (h, w):
+        return False
+    diff = cv2.absdiff(got, expected)
+    mask = np.ones((h, w), dtype=bool)
+    mask[
+        max(0, y0 - band_px) : min(h, y1 + band_px),
+        max(0, x0 - band_px) : min(w, x1 + band_px),
+    ] = False
+    worst = int(diff[mask].max()) if mask.any() else 0
+    if worst > 3:
+        logger.info(
+            "vector invert verification failed (max diff %d outside the "
+            "AA band) – falling back to the raster path",
+            worst,
+        )
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # crop post-stage (ADR 0003)
 # ---------------------------------------------------------------------------
 
@@ -675,6 +789,11 @@ def _save_cropped(
 
     ``faithful_doc`` is serialized and reopened because ``insert_pdf``
     requires a *different* document object as source.
+
+    ``vector-invert`` pages (ADR 0008, D3) prefer a **vector-exact** crop
+    (``show_pdf_page(clip=…)`` with the clip quantised to the render pixel
+    grid, verified against the raster-slice ground truth) so the output
+    stays vector; any deviation falls back to the raster slice.
     """
     src = fitz.open(stream=faithful_doc.write(), filetype="pdf")
     final = fitz.open()
@@ -690,6 +809,17 @@ def _save_cropped(
                 w_pt = pr.rect_pt[2] - pr.rect_pt[0]
                 h_pt = pr.rect_pt[3] - pr.rect_pt[1]
                 if w_pt > 0 and h_pt > 0:
+                    if (
+                        pr.method == "vector-invert"
+                        and _try_vector_crop(src, final, i, pr, dpi)
+                    ):
+                        pr.cropped = True
+                        logger.info(
+                            "Page %d: cropped (vector-exact) to board rect "
+                            "(%.1f x %.1f pt)",
+                            i + 1, w_pt, h_pt,
+                        )
+                        continue
                     x0, y0, x1, y1 = pr.rect_px
                     sliced = _render_page(page, dpi)[y0:y1, x0:x1]
                     new_page = final.new_page(width=w_pt, height=h_pt)
@@ -719,6 +849,70 @@ def _save_cropped(
     finally:
         final.close()
         src.close()
+
+
+def _try_vector_crop(src, final, i: int, pr: PageResult, dpi: int) -> bool:
+    """Vector-exact crop for ``vector-invert`` pages (ADR 0008, D3).
+
+    Copies the board rect via ``show_pdf_page(clip=…)`` — the clip is
+    quantised to the render pixel grid (``rect_px`` × 72/dpi) so the vector
+    crop renders geometrically identical to the raster-slice ground truth.
+    The result is verified against that ground truth (interior, excluding a
+    3 px border) with a "geometry + coarse fidelity" contract: worst-pixel
+    cap (32) + deviating-pixel fraction cap (0.1 %) — a clip import
+    re-rasterises vector edges at a slightly different subpixel phase
+    (imperceptible AA, see the body of this function); on a real deviation
+    the page is deleted and the raster slice is used instead (a crop is
+    never wrong).
+    """
+    x0, y0, x1, y1 = pr.rect_px
+    k = 72.0 / dpi
+    w = (x1 - x0) * k
+    h = (y1 - y0) * k
+    if w <= 0 or h <= 0:
+        return False
+    new_page = final.new_page(width=w, height=h)
+    try:
+        new_page.show_pdf_page(
+            new_page.rect, src, i, clip=fitz.Rect(x0 * k, y0 * k, x1 * k, y1 * k)
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("vector crop failed: %s", e)
+        final.delete_page(final.page_count - 1)
+        return False
+    got = _render_page(new_page, dpi)
+    truth = _render_page(src.load_page(i), dpi)[y0:y1, x0:x1]
+    if abs(got.shape[0] - truth.shape[0]) > 1 or abs(got.shape[1] - truth.shape[1]) > 1:
+        final.delete_page(final.page_count - 1)
+        return False
+    hh = min(got.shape[0], truth.shape[0])
+    ww = min(got.shape[1], truth.shape[1])
+    band = 3
+    if hh > 2 * band and ww > 2 * band:
+        d = cv2.absdiff(
+            got[band : hh - band, band : ww - band],
+            truth[band : hh - band, band : ww - band],
+        ).max(axis=2)
+        # ADR 0008 D3 (revised): a clip import re-rasterises *vector* edges
+        # at a slightly different subpixel phase than the full-page render
+        # (empirically on a 1229-path document: max diff 16 on 0.003 % of
+        # pixels — imperceptible AA, same category as the board-edge AA
+        # band of D1/D2).  The contract is therefore "geometry + coarse
+        # fidelity": a cap on the worst pixel (wrong colour / missing
+        # content / misplacement) plus a cap on the *fraction* of deviating
+        # pixels (a mis-clipped page — the ADR 0007 offset bug — deviates
+        # over whole edge regions and fails both caps → raster slice).
+        n_bad = int((d > 2).sum())
+        frac_bad = n_bad / max(1, d.size)
+        if int(d.max()) > 32 or frac_bad > 0.001:
+            logger.debug(
+                "vector crop verification failed (max diff %d, %d px "
+                "deviating = %.4f%%) – using raster slice",
+                int(d.max()), n_bad, frac_bad * 100.0,
+            )
+            final.delete_page(final.page_count - 1)
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +1025,15 @@ def _verify_page(
     x0, y0, x1, y1 = clamp_rect(rect_px, w, h)
     outside = np.ones((h, w), dtype=bool)
     outside[y0:y1, x0:x1] = False
+    # vector-invert (ADR 0008, D1/D2): the board-edge AA band fundamentally
+    # differs between vector semantics (inverted colours blended with the
+    # non-inverted white canvas) and raster semantics (inversion of the
+    # blend) — exclude it from the "outside" comparison (the transformation
+    # itself is verified against the raster ground truth in
+    # _try_vector_invert, including this band exclusion).
+    if pr.method == "vector-invert":
+        band = vectorops.aa_band_px(dpi)
+        outside[max(0, y0 - band) : min(h, y1 + band), max(0, x0 - band) : min(w, x1 + band)] = False
     outside_diff = diff[outside]
     inside_diff = diff[y0:y1, x0:x1]
     pr.verification["outside_max_diff"] = int(outside_diff.max())

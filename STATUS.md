@@ -288,6 +288,91 @@ beinhalten. ADR 0006 (accepted):
 - Branch `feature/fix-crop-offset-and-gui-errors` → PR #6 → CI grün →
   Rebase-Merge.
 
+**v0.8.0-dev – Vektorerhaltende Inversion (2026-11-17, Branch
+`feature/vector-invert`, NICHT gemergt).** User-Wunsch: „mach dass das SVG,
+das von der Schrift gespeichert wird, komplett übernommen wird – momentan ist
+das Original richtig clear, das konvertierte aber auf 300 DPI trotzdem extrem
+pixelig." ADR 0008 (accepted), spec Phase 7:
+
+- **Neue 4. Ausgabemethode `vector-invert`** (automatisch, ohne neue
+  Option): Vektor-Board-Seiten (ohne Bild-XObject) werden statt
+  `rerasterize` **im Content-Stream invertiert** — der Fidelity-Copy
+  XObject-Baum (`/fzFrm0` → `/fullpage` → evtl. verschachtelte Forms,
+  Offset-MediaBox via `/Matrix`) wird rekursiv umgeschrieben
+  (`vectorops.rewrite_page_tree`). Pro Paint-Operator (Pfad-Füllung/-Stroke,
+  Text) geometrische Entscheidung: BBox × CTM-Kette vs. `rect_pt` —
+  außerhalb → behalten; nah-weiße Vollläche (alle Kanäle ≥ 200, Coverage
+  ≥ 95 %) → Background-Plate, behalten; innen/straddling → invertieren.
+- **Farb-Mathematik = exakt Raster-Pfad-Semantik:** `floor(v·255)`-
+  Quantisierung (Renderer-Kalibrierung), dann `255−v` bzw. bg_target-Remap
+  mit gleichem `B_c` (p25 des Board-Renders) und den Keep-Ausschlüssen
+  (`color_mask`/`hex_keep_mask` auf 1×1). **Keine Original-Operanden werden
+  umgeschrieben** — bei Widerspruch schiebt der Rewriter explizite
+  Farb-Operatoren vor das erste Operand des Paints ein (effektive-Farbe-
+  Tracking pro Grafik-Zustand; order-sicher für geteilte Operanden in
+  beiden Reihenfolgen).
+- **Wichtige Implementierungs-Fixes (empirisch gefunden):**
+  (1) Farb-Insert bei Text muss **vor dem String-/Array-Operand** sitzen
+  (`1 1 1 rg (abc) Tj`), nicht zwischen String und Show-Operator — sonst
+  rendert MuPDF korrekt, aber `get_text()` liefert leer (Text-Extraktion
+  der Ausgabe bricht). (2) Image-XObjects haben kein `/BBox` (belegen das
+  Unit-Square des User-Space) → Platzierung allein über die CTM-Kette;
+  Bild außerhalb des Boards = unproblematisch, Bild im/nah am Board =
+  Raster-Fallback. (3) `clean_contents()` normalisiert referenzierte
+  Forms (bei kaputter Referenz leert MuPDF den Content still) — im
+  Pipeline-Kontext folgenlos (Fallback leert die Seite ohnehin;
+  Erfolgsweg per D2 abgesichert).
+- **Selbstheilung (D2):** alles, was v1 nicht exakt vermag
+  (`VectorUnsupported`: `BI` Inline-Images, `sh` Shadings, `gs`
+  ExtGState/Transparenz, `scn/SCN`, nicht-Device-Farbräume `cs/CS`,
+  rotierte/schiefe Text-Matrizen, Image im Board) → Raster-Fallback
+  (`method = "rerasterize"`); danach Verifikation gegen die
+  Raster-Grundwahrheit (±AA-Band `max(4, dpi/36+2)` px um `rect_px`
+  ausgenommen — fundamentaler Semantik-Unterschied an der Board-Kante —
+  Rest max-Diff ≤ 3) → Scheitern = Raster-Fallback. `_verify_page`
+  exkludiert für `vector-invert` dasselbe Band.
+- **Vektor-exakter Crop (D3):** `vector-invert`-Seiten werden mit
+  `show_pdf_page(clip=rect_pt)` (pixel-gitter-quantisiert) gecropt — bleibt
+  Vektor; gegen die Render-Slice-Grundwahrheit verifiziert (3-px-Rand,
+  max ≤ 2), Abweichung → Raster-Slice (v0.7.2-Weg).
+- **Tests:** +101 Unit (`tests/test_vectorops.py`: Tokenizer inkl.
+  binarsicherer Strings/Arrays/Dicts/Comments + BI-/Unresolved-Refusals,
+  `_fmt`/`_quant`-Roundtrip über alle 8-Bit-Werte, CMYK-Stabilität
+  (Doppelkonversion ≤ 1 Level — dokumentierte Nicht-Injektivität),
+  `FlatColorTransform` Complement/Remap/Keep/Chroma-Guard, `_decide`-
+  Geometrie inkl. Plate-Regel + Toleranz, Rewriter: Insertion, geteilte
+  Operanden in **beiden** Reihenfolgen, q/Q-Restore, cm-CTM, Text-Anker,
+  `cs/scn/gs/sh/BI/rotierte Tm` → Refusal, Image-Do innen/außen,
+  `rewrite_page_tree` flach/verschachtelt/`/Matrix` + „nichts geschrieben
+  bei Refusal"). +12 Pipeline-Integration
+  (`tests/test_pipeline.py::TestVectorInvert`: vector/xobj/Offset →
+  vector-invert mit pixel-exaktem Outside, Keep-Colors, bg_target,
+  invert-off → copy, **300-DPI-Vorlesungs-Szenario** (Text + Linien →
+  Ausgabe ohne Raster, Vektor-Drawings erhalten, **Text extrahierbar**,
+  crop auf Board), Crop vector-exakt inkl. Offset, 4 Fallback-Kinds:
+  Inline-Image/Shading/ExtGState/rotierter Text → rerasterize).
+  `tests/synth.py`: neue Kinds `xobj`, `vector-<construct>`, Optionen
+  `offset` (versetzte MediaBox), `marks`, `text`; BGR→RGB-Konversion für
+  Vector-Fills (Fixture-Konvention konsistent mit `board_image`).
+  Bestehende Tests auf das neue Method-Verhalten aktualisiert
+  (vector-Fixtures: `rerasterize` → `vector-invert`, pixel-exakter
+  Outside).
+- **Ergebnis:** **386 passed + 1 skipped** (headless), **16 GUI** unter
+  Xvfb, Coverage **90 %** (vectorops 88 %, Gate 80 %). Smoke-Tests:
+  4 Szenarien (vector/xobj × origin/offset-MediaBox) → alle
+  `vector-invert`, `outside_max_diff = 0`, vector-exact Crop, keine
+  Image-XObjects im Output; 300-DPI-Vorlesungs-Doc → Vektor-Output mit
+  intakter Text-Extraktion.
+- **Bekannte Limitationen (dokumentiert):** Transparenz/Blend, Shadings,
+  Inline-Images, nicht-Device-Farbräume, rotierte/schiefe Texte, Bild im
+  Board → Raster-Fallback; Pattern-/ICCBased-Farbräume sind in MuPDF 1.28
+  nicht zuverlässig renderbar (Refusal nur unit-geprüft, keine
+  Fixture-Seite); CMYK-Doppelkonversion ±1 Level (D2-Toleranz abgedeckt).
+- **Nicht gemergt** (User-Direktive): Branch `feature/vector-invert`
+  (lokal), Version in `pyproject.toml`/`__init__.py` auf `0.8.0-dev`.
+  Offen: User-Test mit dem echten Vorlesungs-Dokument (300 DPI) → dann
+  PR + Merge + Tag.
+
 ## Future Ideas (backlog, no priority yet)
 - **Standalone binary** (PyInstaller/Nuitka): single executable per OS
   (zero prerequisites, ~150–200 MB) for releases — ultimate comfort for
@@ -422,9 +507,69 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   available in the headless dev container, so the GUI was verified by
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
-## Next Step
-None – **v0.7.2 released** (Crop-Robustheit bei versetzten
-MediaBox/CropBox, GUI-Ordner-Batch, robuste Fehlerdialoge; PR #6 merged,
-tag `v0.7.2`). Distribution via the usual ZIP/clone +
-`start.sh`/`start.bat`. Offen: Nutzer-Windows-Test der v0.7.2-ZIP mit
-dem betroffenen Dokument (Crop-Check) + Ordner-Input in der GUI.
+## Next Step / STAND (2026-11-19, Tag 2)
+**User-Bestätigung (2026-11-19):** „SUPER SUPER DAS FUNKTIONIERT
+PERFEKT" — der Fix (gs/scn/cs + Vector-Crop-Kontrakt) läuft auf
+Windows mit `inputs/test.pdf`. → **Merge-Freigabe erteilt** („den
+feature branch auf main mergen") + neuer Auftrag: DPI-Regler aus dem
+GUI entfernen (ADR 0009), Docs anpassen.
+
+**v0.8.0-dev** liegt auf Branch **`feature/svg-implement`** (gepusht
+auf GitHub); Merge in `master` (Default-Branch) steht an.
+
+**User-Feedback 2026-11-18:** „immer noch pixelig … mit dem anderen
+Branch getestet … es sind keine Bilder in dem PDF, es ist das
+test.pdf aus dem inputs folder gewesen." → **Tatsächlicher Bug
+gefunden und behoben (2026-11-19):** Der Rewriter lehnte das reale
+`inputs/test.pdf` ab (`VectorUnsupported` → `rerasterize`), weil
+App-Export-PDFs drei als „v1-nicht-unterstützt" markierte Konstrukte
+verwenden, die sich als harmlos/trivial erweisen:
+
+1. **Identitäts-ExtGState** `/GSa` (`/ca 1 /CA 1 /SMask /None`) wird
+   ~1230× gesetzt (einmal pro Pfad) — keinerlei Transparenz.
+   **Fix:** `gs` wird nur abgewiesen bei ECHTER Transparenz/Blend/
+   Soft-Mask (`/ca`/`/CA` < 1, `/SMask` ≠ `/None`, `/BM` ≠ `/Normal`);
+   Identitäts-Zustände gehen durch.
+2. **Benannter Device-Farbraum:** `/CSp cs` + `R G B scn`, wobei
+   `/CSp` in `/Resources /ColorSpace` auf `/DeviceRGB` zeigt.
+   **Fix:** `cs`/`CS` löst Names über Resources auf (Literal +
+   indirekte Referenz); `scn`/`SCN` akzeptiert (Operand-Semantik wie
+   `sc`/`SC`).
+3. **Crop-Stage re-rasterte das Ergebnis:** die Vector-Crop-
+   Verifikation „pixel-identisch (max ≤ 2)" scheiterte am inhärenten
+   Subpixel-AA-Phasenunterschied des Clip-Imports (empirisch: max-
+   Diff 16 auf 0,003 % der Pixel — wahrnehmungsunwesentlich).
+   **Fix (ADR 0008 D3-Revision):** Kontrakt „Geometrie + grobe
+   Fidelity": max-Diff ≤ 32 UND abweichende Pixel ≤ 0,1 %;
+   systematischer Fehlauschnitt scheitert an beiden Caps → Raster-
+   Slice bleibt als Sicherheitsnetz.
+
+Zusätzlich behoben: `F`/`B`/`B*` wurden als Nicht-Paint-Operatoren
+behandelt (ihre Fills/Stroke bekamen keine Farb-Entscheidung; D2
+prüft nur außerhalb des Boards → wäre unentdeckt geblieben);
+`_fmt(0)` → `0` statt `0.000040`.
+
+**Verifikation am echten Dokument (150 UND 300 DPI):**
+`method=vector-invert`, Outside max-Diff 0, **vector-exact Crop**,
+**0 Bild-XObjects** im Output, **1229 Vektor-Drawings erhalten**,
+Scharfheit (Laplacian) @600dpi **693.6** vs. 118.8 (altes Bitmap).
+Regressionstest `TestRealSampleVectorInvert` (echtes `inputs/test.pdf`
+end-to-end) + `TestResourceResolution` + `TestStreamRewriterAppExport`
+neu. Suite: **413 passed + 1 skipped** (headless), **16 GUI** (Xvfb),
+Coverage **90.54 %**. ADR 0008 (Revision-Sektion) + spec.md (Phase 7.3)
+aktualisiert.
+
+**DPI-Regler entfernt (ADR 0009, 2026-11-19):** GUI ohne
+DPI-Widget/`dpi_var`/`_on_dpi_change`; GUI rendert + verarbeitet mit
+Pipeline-Default (150 dpi); `process_pdf` erhält keinen `dpi` mehr
+aus der GUI. CLI `--dpi` (20–600) + Config-Option `dpi` unverändert.
+GUI-Tests erweitert: `dpi_var`/`dpi_slider`/`dpi_value` dürfen nicht
+mehr existieren; kein `dpi`-Keyword bei `process_pdf`. README (GUI-
+Abschnitt) + spec.md (Phase 8) + ADR 0009.
+
+**Nächste Schritte (laufend):**
+1. ~~Fix-Commit pushen, User-Test~~ → erledigt (User-Bestätigung).
+2. ~~DPI-Regler entfernen + Docs~~ → erledigt (ADR 0009).
+3. **Merge `feature/svg-implement` → `master`** (User-Freigabe
+   2026-11-19) + Push. Danach optional: Tag `v0.8.0` + GitHub-Release
+   (User noch nicht explizit verlangt).
