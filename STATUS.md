@@ -567,9 +567,13 @@ GUI-Tests erweitert: `dpi_var`/`dpi_slider`/`dpi_value` dürfen nicht
 mehr existieren; kein `dpi`-Keyword bei `process_pdf`. README (GUI-
 Abschnitt) + spec.md (Phase 8) + ADR 0009.
 
-**Nächste Schritte (laufend):**
-1. ~~Fix-Commit pushen, User-Test~~ → erledigt (User-Bestätigung).
-2. ~~DPI-Regler entfernen + Docs~~ → erledigt (ADR 0009).
-3. **Merge `feature/svg-implement` → `master`** (User-Freigabe
-   2026-11-19) + Push. Danach optional: Tag `v0.8.0` + GitHub-Release
-   (User noch nicht explizit verlangt).
+**Merge durchgeführt (2026-11-19):** `feature/svg-implement` →
+`master` per `--no-ff`-Merge-Commit `56e42ac`, gepusht auf GitHub
+(`origin/master` = `56e42ac`). Verifizierter MERGED-Zustand: Full
+Suite **413 passed + 1 skipped** (Exit 0, Coverage 90.54 %), GUI
+Suite **17 passed** (Exit 0), Echtdokument-Regression green.
+
+**Status: DONE** (alle TODO-Punkte erledigt, alle Tests grün, auf
+master). Optionaler Follow-up, vom User nicht verlangt: Tag `v0.8.0`
++ GitHub-Release + Version-Bump aus `0.8.0-dev` (Master trägt
+bewusst weiter die -dev-Version, wie in früheren Zyklen).
