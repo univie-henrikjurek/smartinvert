@@ -10,6 +10,9 @@ dist/
 .venv/
 venv/
 
+# BYO-env choice — local per checkout, never published (ADR 0010)
+.smartinvert_env
+
 # Generated artifacts
 outputs/
 .pytest_cache/
