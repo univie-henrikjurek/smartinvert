@@ -573,7 +573,6 @@ Abschnitt) + spec.md (Phase 8) + ADR 0009.
 Suite **413 passed + 1 skipped** (Exit 0, Coverage 90.54 %), GUI
 Suite **17 passed** (Exit 0), Echtdokument-Regression green.
 
-**Status: DONE** (alle TODO-Punkte erledigt, alle Tests grün, auf
-master). Optionaler Follow-up, vom User nicht verlangt: Tag `v0.8.0`
-+ GitHub-Release + Version-Bump aus `0.8.0-dev` (Master trägt
-bewusst weiter die -dev-Version, wie in früheren Zyklen).
+**Status: DONE — v0.8.0 released** (alle TODO-Punkte erledigt, alle
+Tests grün). Version `0.8.0` (pyproject.toml + `__init__.py`), Tag
+`v0.8.0` + GitHub-Release gesetzt (2026-11-19).
