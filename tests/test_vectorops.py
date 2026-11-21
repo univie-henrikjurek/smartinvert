@@ -338,9 +338,16 @@ class TestStreamRewriter:
         with pytest.raises(VectorUnsupported, match="shading"):
             rewrite(b"100 100 100 100 re W n /Sh0 sh")
 
-    def test_scn_raises(self):
-        with pytest.raises(VectorUnsupported, match="scn/SCN"):
-            rewrite(b"0.5 0.5 0.5 0 scn")
+    def test_scn_device_space_works(self):
+        """`scn` in the default (DeviceRGB) space is identical to `rg`."""
+        out = rewrite(b"0.1 0.1 0.1 scn 200 300 100 100 re f")
+        assert _INV_01 in out
+        assert b"0.1 0.1 0.1 scn" in out  # original operands untouched
+
+    def test_scn_gray_space(self):
+        out = rewrite(b"/DeviceGray cs 0.1 scn 200 300 100 100 re f")
+        inv = b" " + vectorops._fmt(255 - vectorops._quant(0.1)) + b" g "
+        assert inv in out
 
     def test_cs_non_device_raises(self):
         with pytest.raises(VectorUnsupported, match="unsupported colour space"):
@@ -404,6 +411,211 @@ class TestStreamRewriter:
         data = b"q 40 0 0 40 250 350 cm /Im0 Do Q"
         with pytest.raises(VectorUnsupported, match="image XObject inside/near board"):
             vectorops._StreamRewriter(doc, data, _transform(), BOARD, PAGE, 2.0, res=res)
+
+
+# ---------------------------------------------------------------------------
+# resource resolution (ExtGState / named colour spaces)
+# ---------------------------------------------------------------------------
+
+
+def _page_with_resources(resources: str):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    doc.xref_set_key(page.xref, "Resources", resources)
+    return doc, page.xref
+
+
+def _extg_doc(gs_body: str = "", cs_entries: str = ""):
+    """Page whose /Resources carry an /GSa ExtGState and/or /ColorSpace."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    parts: List[str] = []
+    if gs_body:
+        gx = doc.get_new_xref()
+        doc.update_object(gx, f"<< /Type /ExtGState {gs_body} >>")
+        parts.append(f"/ExtGState << /GSa {gx} 0 R >>")
+    if cs_entries:
+        parts.append(f"/ColorSpace << {cs_entries} >>")
+    if parts:
+        doc.xref_set_key(page.xref, "Resources", "<< " + " ".join(parts) + " >>")
+    return doc, page.xref
+
+
+def rewrite_with(doc, owner_xref: int, data: bytes, res: dict = None, **kw) -> bytes:
+    rw = vectorops._StreamRewriter(
+        doc, data, _transform(**kw), BOARD, PAGE, 2.0,
+        res=res or {}, owner_xref=owner_xref,
+    )
+    return rw.result()
+
+
+class TestResourceResolution:
+    def test_resource_dict_str_inline_and_missing(self):
+        doc, xref = _page_with_resources("<< /Foo 1 >>")
+        assert "/Foo 1" in vectorops._resource_dict_str(doc, xref)
+        # nonexistent owner xref → "" (defensive)
+        assert vectorops._resource_dict_str(doc, 99999) == ""
+        # a fresh page's empty /Resources dict carries no colour info
+        empty = fitz.open()
+        p = empty.new_page(width=595, height=842)
+        assert "/ColorSpace" not in vectorops._resource_dict_str(empty, p.xref)
+
+    def test_color_space_map_literal_device(self):
+        doc, xref = _page_with_resources(
+            "<< /ColorSpace << /A /DeviceRGB /B /DeviceGray /C /DeviceCMYK >> >>"
+        )
+        m = vectorops._color_space_map(doc, xref)
+        assert m == {"A": "rgb", "B": "gray", "C": "cmyk"}
+
+    def test_color_space_map_compact_serialisation(self):
+        # PyMuPDF serialises dicts without whitespace between entries
+        doc, xref = _page_with_resources(
+            "<< /ColorSpace <</A/DeviceRGB/B/DeviceGray>> >>"
+        )
+        assert vectorops._color_space_map(doc, xref) == {"A": "rgb", "B": "gray"}
+
+    def test_color_space_map_indirect_device(self):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        csx = doc.get_new_xref()
+        doc.update_object(csx, "/DeviceRGB")
+        doc.xref_set_key(page.xref, "Resources", f"<< /ColorSpace << /A {csx} 0 R >> >>")
+        assert vectorops._color_space_map(doc, page.xref)["A"] == "rgb"
+
+    def test_color_space_map_pattern_and_icc_unsupported(self):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        px = doc.get_new_xref()
+        doc.update_object(px, "[/Pattern /DeviceRGB]")
+        doc.xref_set_key(
+            page.xref,
+            "Resources",
+            f"<< /ColorSpace << /P {px} 0 R /Q [/ICCBased 3 0 R] >> >>",
+        )
+        m = vectorops._color_space_map(doc, page.xref)
+        assert m["P"] is None and m["Q"] is None
+
+    def test_extgstate_harmless_identity(self):
+        # inputs/test.pdf's /GSa verbatim: Type-3-text keys + full opacity
+        doc, xref = _extg_doc("/SA true /SM .02 /ca 1 /CA 1 /AIS false /SMask /None")
+        assert vectorops._extgstate_harmless(doc, xref, "GSa") is True
+
+    @pytest.mark.parametrize(
+        "body", ["/ca .5", "/CA .5", "/ca 0.999", "/SMask 9 0 R", "/BM /Multiply"]
+    )
+    def test_extgstate_transparency_blend_mask_refused(self, body):
+        doc, xref = _extg_doc(body)
+        assert vectorops._extgstate_harmless(doc, xref, "GSa") is False
+
+    def test_extgstate_normal_blend_and_line_keys_harmless(self):
+        doc, xref = _extg_doc(
+            "/BM /Normal /lw 2 /LC 1 /LJ 0 /d [2 1] /ri /ExtGState_Comp /TR 2"
+        )
+        assert vectorops._extgstate_harmless(doc, xref, "GSa") is True
+
+    def test_extgstate_unknown_name_refused(self):
+        doc, xref = _extg_doc("/ca 1")
+        assert vectorops._extgstate_harmless(doc, xref, "Nope") is False
+
+    def test_extgstate_unresolvable_refused(self):
+        assert vectorops._extgstate_harmless(None, 0, "GSa") is False
+
+
+class TestStreamRewriterAppExport:
+    """Real-world app-export patterns (the inputs/test.pdf failure mode):
+    a harmless identity ExtGState applied per path, colours set through a
+    *named* DeviceRGB space (``/CSp cs … scn``), flipped app-space CTM,
+    even-odd clip (``W* n``) and even-odd fills (``f*``)."""
+
+    HARMLESS_GS = "/SA true /SM .02 /ca 1 /CA 1 /AIS false /SMask /None"
+
+    def test_harmless_gs_passes_and_paint_inverts(self):
+        doc, xref = _extg_doc(self.HARMLESS_GS)
+        out = rewrite_with(doc, xref, b"/GSa gs 0.1 0.1 0.1 rg 200 300 100 100 re f")
+        assert b"/GSa gs" in out  # passed through
+        assert _INV_01 in out  # fill inverted
+
+    def test_harmless_gs_outside_paint_untouched(self):
+        doc, xref = _extg_doc("/ca 1 /CA 1")
+        data = b"/GSa gs 0.1 0.1 0.1 rg 500 700 50 50 re f"
+        assert rewrite_with(doc, xref, data) == data
+
+    @pytest.mark.parametrize(
+        "body", ["/ca 0.5", "/CA 0.5", "/SMask 9 0 R", "/BM /Screen"]
+    )
+    def test_harmful_gs_raises(self, body):
+        doc, xref = _extg_doc(body)
+        with pytest.raises(VectorUnsupported, match="ExtGState"):
+            rewrite_with(doc, xref, b"/GSa gs 0.1 0.1 0.1 rg 200 300 100 100 re f")
+
+    def test_cs_named_devicergb_via_resources(self):
+        # the exact inputs/test.pdf pattern: /CSp = /DeviceRGB in Resources
+        doc, xref = _extg_doc(cs_entries="/CSp /DeviceRGB /CSpg /DeviceGray")
+        out = rewrite_with(doc, xref, b"/CSp cs 0.1 0.1 0.1 scn 200 300 100 100 re f")
+        assert _INV_01 in out
+
+    def test_cs_named_indirect_devicergb(self):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        csx = doc.get_new_xref()
+        doc.update_object(csx, "/DeviceRGB")
+        doc.xref_set_key(page.xref, "Resources", f"<< /ColorSpace << /CSp {csx} 0 R >> >>")
+        out = rewrite_with(doc, page.xref, b"/CSp cs 0.1 0.1 0.1 scn 200 300 100 100 re f")
+        assert _INV_01 in out
+
+    def test_cs_named_pattern_raises(self):
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        px = doc.get_new_xref()
+        doc.update_object(px, "[/Pattern /DeviceRGB]")
+        doc.xref_set_key(page.xref, "Resources", f"<< /ColorSpace << /PCSp {px} 0 R >> >>")
+        with pytest.raises(VectorUnsupported, match="unsupported colour space"):
+            rewrite_with(doc, page.xref, b"/PCSp cs 1 scn 200 300 100 100 re f")
+
+    def test_test_pdf_style_stream(self):
+        """Mini replica of inputs/test.pdf's stream structure.
+
+        With the flipped CTM ``0.24 0 0 -0.24 10.08 831.92`` an app-space
+        point (x, y) lands at page top-left (0.24x + 10.08, 0.24y + 10.08),
+        so app rect (600..1600)² maps into the unit-test BOARD (150..450)².
+        """
+        doc, xref = _extg_doc(self.HARMLESS_GS, cs_entries="/CSp /DeviceRGB")
+        data = (
+            b"/GSa gs /CSp cs /CSp CS\n"
+            b"0.24 0 0 -0.24 10.08 831.92 cm\n"
+            b"600 600 m 1600 600 l 1600 1600 l 600 1600 l h W* n\n"
+            b"q /CSp cs 0.074509803 0.082352941 0.098039215 scn /GSa gs\n"
+            b"600 600 m 1600 600 l 1600 1600 l 600 1600 l h f* Q\n"
+            b"q /CSp cs 1 1 1 scn /GSa gs\n"
+            b"700 700 m 900 700 l 900 900 l 700 900 l h f* Q"
+        )
+        out = rewrite_with(doc, xref, data)
+        # original operands never modified
+        assert b"0.074509803 0.082352941 0.098039215 scn" in out
+        assert b"1 1 1 scn" in out
+        # dark board fill and white content fill both inverted (2 insertions)
+        dark = (
+            vectorops._quant(0.074509803),
+            vectorops._quant(0.082352941),
+            vectorops._quant(0.098039215),
+        )
+        inv_dark = b" ".join(vectorops._fmt(255 - c) for c in dark) + b" rg"
+        assert inv_dark in out
+        assert b"0 0 0 rg" in out  # white -> black
+        assert out.count(b" rg") == 2  # exactly the two insertions
+
+    def test_F_and_B_operators_paint(self):
+        """F (even-odd fill) and B/B* (fill+stroke) must receive paint
+        decisions like f/S (they were silently dropped before)."""
+        out = rewrite(b"0.1 0.1 0.1 rg 200 300 100 100 re F")
+        assert _INV_01 in out
+        out2 = rewrite(b"0.1 0.1 0.1 rg 0.1 0.1 0.1 RG 200 300 m 300 300 l B")
+        assert out2.count(_INV_01) == 2  # fill + stroke insertions
+        out3 = rewrite(b"0.1 0.1 0.1 rg 200 300 100 100 re B*")
+        # the stroke colour was never set → PDF default black → inverted
+        # to white (a *different* insertion from the fill's)
+        assert out3.count(_INV_01) == 1
+        assert b"1 1 1 rg" in out3
 
 
 # ---------------------------------------------------------------------------

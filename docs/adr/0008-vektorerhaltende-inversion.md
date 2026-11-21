@@ -189,3 +189,91 @@ in `PageResult.method` („vector-invert") und den Logs sichtbar.
   Fallback; Image im Board → Raster-Fallback; Pattern/ICCBased sind in
   MuPDF 1.28 nicht renderbar (nur unit-geprüft); CMYK-Doppelkonversion
   ±1 Level.
+
+---
+
+## Revision 2026-11-19 (v0.8.0-dev, User-Feedback: „immer noch pixelig")
+
+**Hintergrund:** Der User testete `feature/svg-implement` mit dem
+Eigensample `inputs/test.pdf` → Output weiterhin pixelig. Diagnose am
+echten Dokument (Debug-Log + Content-Stream-Analyse): Der Rewriter hatte
+die Seite abgelehnt (`VectorUnsupported`) und auf `rerasterize`
+umgeschaltet — **die Vektor-Inversion lief nie**. `inputs/test.pdf` ist
+ein echter App-Export mit 1229 Vektorpfaden, der drei „v1-Nicht-
+Unterstütztes"-Konstrukte verwendet, die sich als harmlos bzw. trivial
+unterstützbar herausstellten:
+
+* **Empirische Eigenschaft 10:** App-Export-PDFs setzen pro Pfad einen
+  *Identitäts-ExtGState* (`/GSa` mit `/ca 1 /CA 1 /SMask /None`, plus
+  nur-Type-3-Text-spezifische Keys `/SA`/`/SM`) — d. h. **keine**
+  Transparenz. Zusätzlich wird die Farbe über einen **benannten**
+  Device-Farbraum gesetzt (`/CSp cs` + `R G B scn`, wobei `/CSp` im
+  `/Resources /ColorSpace` auf `/DeviceRGB` zeigt), mit umgekehrter
+  App-Space-CTM (`0.24 0 0 -0.24 10.08 831.92`), Even-Odd-Clip (`W* n`)
+  und Even-Odd-Fills (`f*`).
+* **Empirische Eigenschaft 11:** Ein Clip-Import (`show_pdf_page(clip=…)`)
+  rastert *Vektor*-Kanten in einer leicht anderen Subpixel-Phase als der
+  Vollseiten-Render (auf dem 1229-Pfad-Dokument: max-Diff 16 auf
+  0,003 % der Pixel, verstreut — wahrnehmungsunwesentlich; dieselbe
+  Kategorie wie das D1/D2-Board-Rand-AA-Band). „Pixel-identisch zum
+  Render-Slice" ist für Vektor-Content also **nicht** das richtige
+  Crop-Kriterium.
+
+### D1-Extension: gs / benannte Device-Farbräume / scn werden unterstützt
+
+* **`gs`** wird nicht mehr pauschal abgelehnt: Der Referenzierte
+  ExtGState wird aufgelöst und analysiert. **Harmlos** (→ Operator wird
+  unverändert durchgelassen) = voll opak (`/ca` und `/CA` == 1 oder
+  abwesend), kein `/SMask` (oder `/SMask /None`) und kein `/BM` ≠
+  `/Normal`. Alle übrigen Keys (Linienbreite, Dash, Caps, Miter,
+  Flatness, Rendering Intent, …) beeinflussen die Farb-Umschreibung nie.
+  Echte Transparenz/Blend/Soft-Mask oder Unauflösbarkeit → weiterhin
+  `VectorUnsupported` (Raster-Fallback, D2).
+* **`cs`/`CS`** löst den Namen nun auch über `/Resources /ColorSpace`
+  auf (literale Device-Namen **und** indirekte Referenzen auf Device-
+  Namen). `scn`/`SCN` werden für alle getrackten Device-Räume akzeptiert
+  ( Operand-Semantik identisch zu `sc`/`SC`). ICCBased/Pattern/sonstige
+  Räume → weiterhin Refusal.
+* **Bugfix:** `F` (Even-Odd-Fill) und `B`/`B*` (Fill+Stroke) wurden als
+  Nicht-Paint-Operatoren behandelt → ihre Fills/Stroke erhielten keine
+  Farb-Entscheidung (die D2-Verifikation prüft nur *außerhalb* des
+  Boards → wäre unentdeckt geblieben). Jetzt wie `f*` bzw. `s`/`b`.
+* **Kosmetik:** `_fmt(0)` liefert `0` statt `0.000040` (beides
+  quantisiert auf dem Renderer-Grid zu 0; symmetrisch zum `v>=255 → 1`-
+  Sonderfall).
+
+### D3-Revision: „Geometrie + grobe Fidelity" statt Pixel-Identität
+
+Das Vector-Crop-Sicherheitsnetz vergleicht das Clip-Import-Ergebnis
+gegen die Render-Slice-Grundwahrheit jetzt mit: **max-Diff ≤ 32**
+(schlechtester Pixel: schützt vor falschen Farben/fehlendem Content/
+Versatz) **und** Anteil abweichender Pixel (Diff > 2) **≤ 0,1 %**
+(schützt vor systematischem Fehlauschnitt — der ADR-0007-Offset-Bug
+abweicht über ganze Kantenregionen → scheitert an beiden Caps → Raster-
+Slice). Ein Crop kann weiterhin nie falsch sein.
+
+### Ergebnis der Revision
+
+* `inputs/test.pdf` (150 und 300 DPI, `crop=True` Default):
+  `method=vector-invert`, **0 Bild-XObjects** im Output, **1229 Vektor-
+  Drawings erhalten**, Outside-Verifikation max-Diff 0, vector-exact
+  Crop; Scharfheit (Laplacian-Varianz) @600 dpi: **693.6** (Vektor) vs.
+  **118.8** (altes Bitmap-Output) → das Pixel-Problem des Users ist
+  beseitigt.
+* Regressionstest `tests/test_pipeline.py::TestRealSampleVectorInvert`
+  läuft das echte `inputs/test.pdf` end-to-end durch (method, 0 Images,
+  ≥ 1000 Drawings, heller Board-Hintergrund) — die Klasse von „Fix
+  funktioniert nur auf synthetischen Fixtures" ist damit abgedeckt.
+* Neue Unit-Tests: `TestResourceResolution` (ColorSpace-Map literal/
+  indirekt/Pattern/ICCBased/Compact-Serialisierung, ExtGState-harmless-
+  Analyse inkl. alle Refusal-Gründe) + `TestStreamRewriterAppExport`
+  (harmless/harmful `gs`, `scn` in Device-Räumen, benannter Farbraum
+  via Resources, Pattern-Refusal, Mini-Replik des test.pdf-Streams,
+  `F`/`B`/`B*`).
+* Suite: **413 passed + 1 skipped** (headless), 16 GUI (Xvfb), Coverage
+  90.54 %.
+* **Unverändert (weiterhin Raster-Fallback):** echte Transparenz
+  (`/ca`/`/CA` < 1), Blend-Modes (`/BM` ≠ Normal), Soft-Masks, Shadings,
+  Inline-Images, ICCBased/Pattern-Farbräume, rotierte/schiefe Texte,
+  Bild im Board. Inline-Dict-ExtGState-Definitionen (statt Referenz)
+  werden sicher abgelehnt (konservative Richtung).

@@ -856,10 +856,14 @@ def _try_vector_crop(src, final, i: int, pr: PageResult, dpi: int) -> bool:
 
     Copies the board rect via ``show_pdf_page(clip=…)`` — the clip is
     quantised to the render pixel grid (``rect_px`` × 72/dpi) so the vector
-    crop renders pixel-identical to the raster-slice ground truth.  The
-    result is verified against that ground truth (interior, excluding a
-    3 px border); on any deviation the page is deleted and the raster
-    slice is used instead (a crop is never wrong).
+    crop renders geometrically identical to the raster-slice ground truth.
+    The result is verified against that ground truth (interior, excluding a
+    3 px border) with a "geometry + coarse fidelity" contract: worst-pixel
+    cap (32) + deviating-pixel fraction cap (0.1 %) — a clip import
+    re-rasterises vector edges at a slightly different subpixel phase
+    (imperceptible AA, see the body of this function); on a real deviation
+    the page is deleted and the raster slice is used instead (a crop is
+    never wrong).
     """
     x0, y0, x1, y1 = pr.rect_px
     k = 72.0 / dpi
@@ -885,12 +889,27 @@ def _try_vector_crop(src, final, i: int, pr: PageResult, dpi: int) -> bool:
     ww = min(got.shape[1], truth.shape[1])
     band = 3
     if hh > 2 * band and ww > 2 * band:
-        inner = cv2.absdiff(
+        d = cv2.absdiff(
             got[band : hh - band, band : ww - band],
             truth[band : hh - band, band : ww - band],
-        )
-        if int(inner.max()) > 2:
-            logger.debug("vector crop verification failed – using raster slice")
+        ).max(axis=2)
+        # ADR 0008 D3 (revised): a clip import re-rasterises *vector* edges
+        # at a slightly different subpixel phase than the full-page render
+        # (empirically on a 1229-path document: max diff 16 on 0.003 % of
+        # pixels — imperceptible AA, same category as the board-edge AA
+        # band of D1/D2).  The contract is therefore "geometry + coarse
+        # fidelity": a cap on the worst pixel (wrong colour / missing
+        # content / misplacement) plus a cap on the *fraction* of deviating
+        # pixels (a mis-clipped page — the ADR 0007 offset bug — deviates
+        # over whole edge regions and fails both caps → raster slice).
+        n_bad = int((d > 2).sum())
+        frac_bad = n_bad / max(1, d.size)
+        if int(d.max()) > 32 or frac_bad > 0.001:
+            logger.debug(
+                "vector crop verification failed (max diff %d, %d px "
+                "deviating = %.4f%%) – using raster slice",
+                int(d.max()), n_bad, frac_bad * 100.0,
+            )
             final.delete_page(final.page_count - 1)
             return False
     return True

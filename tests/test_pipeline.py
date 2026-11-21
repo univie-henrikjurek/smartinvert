@@ -1500,3 +1500,57 @@ class TestVectorInvert:
             assert len(doc[0].get_images()) == 1  # full-page raster (fallback)
         finally:
             doc.close()
+
+
+# ---------------------------------------------------------------------------
+# regression against the project's own sample (inputs/test.pdf)
+# ---------------------------------------------------------------------------
+
+
+class TestRealSampleVectorInvert:
+    """Regression on ``inputs/test.pdf`` — the project's own sample, a real
+    app export.
+
+    The page has 1229 vector paths (no images, no text operators) and:
+
+    * a harmless identity ExtGState (``/GSa``, ``/ca 1 /CA 1 /SMask /None``)
+      applied ~1230 times (once per path),
+    * colours set through a *named* DeviceRGB space (``/CSp cs`` + ``scn``),
+    * a flipped app-space CTM (``0.24 0 0 -0.24 10.08 831.92``),
+    * an even-odd clip (``W* n``) and even-odd fills (``f*``).
+
+    Before the ADR 0008 gs/scn/cs extensions (2026-11-19) this document hit
+    ``VectorUnsupported`` and fell back to ``rerasterize`` → the output was
+    a single full-page bitmap → pixelated at 300 DPI (user report).  This
+    test pins the vector path end-to-end, including the vector-exact crop
+    stage, on the real document.
+    """
+
+    SAMPLE = Path(__file__).resolve().parent.parent / "inputs" / "test.pdf"
+
+    def test_sample_uses_vector_path(self, tmp_path):
+        assert self.SAMPLE.is_file(), "inputs/test.pdf missing from the repo"
+        dst = tmp_path / "sample_out.pdf"
+        result = process_pdf(self.SAMPLE, dst, dpi=150)
+        pr = result.pages[0]
+        assert pr.detected
+        assert pr.method == "vector-invert", (
+            "the sample must take the vector path (harmless identity "
+            f"ExtGState + named DeviceRGB space), got {pr.method}"
+        )
+        assert pr.cropped  # production default crop=True → vector-exact crop
+        doc = fitz.open(str(dst))
+        try:
+            page = doc[0]
+            # the core of the user complaint: no bitmap in the output
+            assert len(page.get_image_info()) == 0
+            # all ~1229 vector paths survive
+            assert len(page.get_drawings()) >= 1000
+            # the dark board background is now light (complement)
+            pix = page.get_pixmap(dpi=72)
+            img = np.frombuffer(pix.samples, np.uint8).reshape(
+                pix.height, pix.width, pix.n
+            )
+            assert img[:, :, :3].astype(float).mean() > 180
+        finally:
+            doc.close()

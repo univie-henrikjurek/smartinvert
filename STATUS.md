@@ -507,13 +507,56 @@ pipeline+tests → `dec9893` CLI+GUI → `7483ea6` review fixes → this commit
   available in the headless dev container, so the GUI was verified by
   syntax/compile checks only (logic follows the existing thread-safe pattern).
 
-## Next Step
-**v0.8.0-dev** steht auf Branch `feature/vector-invert` (lokal,
-**nicht** gemergt – User-Direktive): vektorerhaltende Inversion +
-vektor-exakter Crop für Vektor-Board-Seiten (ADR 0008). Test-Suite grün
-(386 + 1 skipped, 16 GUI unter Xvfb, Coverage 90 %). Nächste Schritte
-nach User-Test mit dem echten Dokument: (1) Branch auf `main`/`master`
-pushen + PR + CI grün abwarten, (2) Rebase-Merge, (3) Version `0.8.0`
-finales, Tag `v0.8.0`. (v0.7.2 ist released, PR #6 merged, Tag
-`v0.7.2`; dessen Windows-Test des Users ist positiv verlaufen:
-„funktioniert top".)
+## Next Step / STAND (2026-11-19)
+**v0.8.0-dev** liegt auf Branch **`feature/svg-implement`** (gepusht
+auf GitHub, **nicht gemergt** — User-Direktive „nicht main mergen").
+
+**User-Feedback 2026-11-18:** „immer noch pixelig … mit dem anderen
+Branch getestet … es sind keine Bilder in dem PDF, es ist das
+test.pdf aus dem inputs folder gewesen." → **Tatsächlicher Bug
+gefunden und behoben (2026-11-19):** Der Rewriter lehnte das reale
+`inputs/test.pdf` ab (`VectorUnsupported` → `rerasterize`), weil
+App-Export-PDFs drei als „v1-nicht-unterstützt" markierte Konstrukte
+verwenden, die sich als harmlos/trivial erweisen:
+
+1. **Identitäts-ExtGState** `/GSa` (`/ca 1 /CA 1 /SMask /None`) wird
+   ~1230× gesetzt (einmal pro Pfad) — keinerlei Transparenz.
+   **Fix:** `gs` wird nur abgewiesen bei ECHTER Transparenz/Blend/
+   Soft-Mask (`/ca`/`/CA` < 1, `/SMask` ≠ `/None`, `/BM` ≠ `/Normal`);
+   Identitäts-Zustände gehen durch.
+2. **Benannter Device-Farbraum:** `/CSp cs` + `R G B scn`, wobei
+   `/CSp` in `/Resources /ColorSpace` auf `/DeviceRGB` zeigt.
+   **Fix:** `cs`/`CS` löst Names über Resources auf (Literal +
+   indirekte Referenz); `scn`/`SCN` akzeptiert (Operand-Semantik wie
+   `sc`/`SC`).
+3. **Crop-Stage re-rasterte das Ergebnis:** die Vector-Crop-
+   Verifikation „pixel-identisch (max ≤ 2)" scheiterte am inhärenten
+   Subpixel-AA-Phasenunterschied des Clip-Imports (empirisch: max-
+   Diff 16 auf 0,003 % der Pixel — wahrnehmungsunwesentlich).
+   **Fix (ADR 0008 D3-Revision):** Kontrakt „Geometrie + grobe
+   Fidelity": max-Diff ≤ 32 UND abweichende Pixel ≤ 0,1 %;
+   systematischer Fehlauschnitt scheitert an beiden Caps → Raster-
+   Slice bleibt als Sicherheitsnetz.
+
+Zusätzlich behoben: `F`/`B`/`B*` wurden als Nicht-Paint-Operatoren
+behandelt (ihre Fills/Stroke bekamen keine Farb-Entscheidung; D2
+prüft nur außerhalb des Boards → wäre unentdeckt geblieben);
+`_fmt(0)` → `0` statt `0.000040`.
+
+**Verifikation am echten Dokument (150 UND 300 DPI):**
+`method=vector-invert`, Outside max-Diff 0, **vector-exact Crop**,
+**0 Bild-XObjects** im Output, **1229 Vektor-Drawings erhalten**,
+Scharfheit (Laplacian) @600dpi **693.6** vs. 118.8 (altes Bitmap).
+Regressionstest `TestRealSampleVectorInvert` (echtes `inputs/test.pdf`
+end-to-end) + `TestResourceResolution` + `TestStreamRewriterAppExport`
+neu. Suite: **413 passed + 1 skipped** (headless), **16 GUI** (Xvfb),
+Coverage **90.54 %**. ADR 0008 (Revision-Sektion) + spec.md (Phase 7.3)
+aktualisiert.
+
+**Nächste Schritte:**
+1. Branch-Update (Fix-Commit) pushen → User testet erneut mit dem
+   echten Dokument (diesmal MUSS das Log `method=vector-invert`
+   zeigen; sonst Fallback-Grund aus dem DEBUG-Log + Dokument
+   anfordern).
+2. Danach: **Merge + Release v0.8.0** — User-Entscheidung ausstehend
+   (frühere „nicht mergen"-Direktive gilt formell weiter).

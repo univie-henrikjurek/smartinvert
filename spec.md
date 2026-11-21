@@ -294,3 +294,23 @@ invertiert. Grundlage:
 *Phase 7 addendum:* 2026‑11‑17, **Supervisor**
 
 ---
+
+### 7.3 Revision (2026‑11‑19) — App-Export-PDFs (`gs`/`scn`/benannte Farbräume)
+
+User-Test mit dem Eigensample `inputs/test.pdf` (1229 Vektorpfade) fiel
+trotz v0.8.0-dev in den Raster-Fallback → Output pixelig. Ursache: der
+Rewriter lehnte harmlose, aber in App-Exports übliche Konstrukte ab.
+Revision (ADR 0008, „Revision 2026‑11‑19"; diese Punkte ersetzen die
+betreffenden Formulierungen in P7‑FR‑2/4):
+
+| # | Anforderung (revidiert) | Beschreibung |
+|---|-------------|--------------|
+| **P7‑FR‑2r** | Self-healing Fallback — revidierte Abweisung | `gs` wird nur abgewiesen, wenn der ExtGState **echte** Farb-Semantik hat (`/ca`/`/CA` < 1, `/SMask` ≠ `/None`, `/BM` ≠ `/Normal`); Identitäts-ExtGState (App-Export-Usus) wird durchgelassen. `cs`/`CS` akzeptiert Device-Räume auch **benannt** über `/Resources /ColorSpace` (Literal + indirekte Referenz); `scn`/`SCN` gilt in getrackten Device-Räumen. Abgewiesen bleiben: Inline-Images, Shadings, ICCBased/Pattern-Farbräume, rotierte/schiefe Texte, Bild im Board. |
+| **P7‑FR‑4r** | Vektor-Crop-Kontrakt revidiert | Vergleich gegen die Render-Slice-Grundwahrheit mit „Geometrie + grobe Fidelity": max-Diff ≤ 32 (schlechtester Pixel) **und** Anteil abweichender Pixel ≤ 0,1 % — ein Clip-Import rastert Vektor-Kanten in leicht anderer Subpixel-Phase (empirisch: max-Diff 16 auf 0,003 % der Pixel, wahrnehmungsunwesentlich). Systematischer Fehlauschnitt scheitert an beiden Caps → Raster-Slice. |
+| **P7‑FR‑6** | Regression am echten Sample | `tests/test_pipeline.py::TestRealSampleVectorInvert` läuft `inputs/test.pdf` end-to-end: `method=vector-invert`, 0 Bild-XObjects im Output, ≥ 1000 Vektor-Drawings, heller Board-Hintergrund. |
+
+---
+
+*Phase 7 revision addendum:* 2026‑11‑19, **Supervisor**
+
+---

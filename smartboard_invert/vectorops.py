@@ -80,6 +80,13 @@ _COLOR_OPS: Dict[str, Tuple[str, int, bool]] = {
     "K": ("cmyk", 4, False),
 }
 
+#: Literal device colour-space names (PDF 8.2.2) → internal space key.
+_DEVICE_CS: Dict[str, str] = {
+    "DeviceGray": "gray",
+    "DeviceRGB": "rgb",
+    "DeviceCMYK": "cmyk",
+}
+
 
 class VectorUnsupported(Exception):
     """A content construct the v1 vector rewrite cannot handle exactly."""
@@ -125,6 +132,8 @@ def _fmt(v: int) -> bytes:
     """
     if v >= 255:
         return b"1"
+    if v <= 0:
+        return b"0"
     d = math.ceil((v + 0.01) * 1e6 / 255) / 1e6
     return f"{d:.6f}".encode("ascii")
 
@@ -502,6 +511,113 @@ def _xobject_stream(doc, xref: int) -> bytes:
     return data if data is not None else b""
 
 
+def _resource_dict_str(doc, owner_xref: int) -> str:
+    """The owner's /Resources dictionary as object text ("" if absent)."""
+    try:
+        kind, val = doc.xref_get_key(owner_xref, "Resources")
+    except Exception:
+        return ""
+    if kind == "xref":
+        try:
+            return doc.xref_object(int(val.split()[0]))
+        except Exception:
+            return ""
+    if kind == "dict":
+        return val or ""
+    return ""
+
+
+def _resolve_indirect_space(doc, xref: int) -> Optional[str]:
+    """A /Resources /ColorSpace entry ``N 0 R`` → space key or None."""
+    try:
+        obj = doc.xref_object(xref).strip()
+    except Exception:
+        return None
+    # only bare device names are accepted; ICCBased/Pattern/stream objects
+    # → None (the selection is refused at `cs` time, self-healing)
+    return _DEVICE_CS.get(obj.lstrip("/"))
+
+
+def _color_space_map(doc, owner_xref: int) -> Dict[str, Optional[str]]:
+    """``{name: "gray"|"rgb"|"cmyk"|None}`` from /Resources /ColorSpace.
+
+    None marks names that are present but point to a space the v1
+    rewriter cannot interpret (``/Pattern``, ``/ICCBased``, …) — they are
+    refused when actually selected.
+    """
+    res = _resource_dict_str(doc, owner_xref)
+    m = re.search(r"/ColorSpace\s*<<", res)
+    if not m:
+        return {}
+    inner = res[m.end() - 2 :]
+    try:
+        end = _scan_dict(inner.encode("latin-1"), 0)
+    except VectorUnsupported:
+        return {}
+    inner = inner[:end]
+    out: Dict[str, Optional[str]] = {}
+    # NOTE: PyMuPDF serialises dicts compactly (".../CSp/DeviceRGB...") —
+    # zero or more whitespace between the entry name and its value.
+    for m2 in re.finditer(
+        r"/([A-Za-z0-9_+\-.]+)\s*((?:\d+\s+0\s+R)|/(?:[A-Za-z0-9_+\-.]+)|\[)",
+        inner,
+    ):
+        name, val = m2.group(1), m2.group(2)
+        # a name value arrives with its leading slash; _DEVICE_CS keys
+        # are the bare names ("DeviceRGB")
+        bare = val.lstrip("/")
+        if bare in _DEVICE_CS:
+            out[name] = _DEVICE_CS[bare]
+        else:
+            ref = re.fullmatch(r"(\d+)\s+0\s+R", val)
+            out[name] = _resolve_indirect_space(doc, int(ref.group(1))) if ref else None
+    return out
+
+
+def _extgstate_harmless(doc, owner_xref: int, name: str) -> bool:
+    """True iff ExtGState */name* has no colour-relevant semantics.
+
+    Harmless = fully opaque (``/ca`` and ``/CA`` == 1 or absent), no
+    ``/SMask`` (or ``/SMask /None``) and no non-``/Normal`` blend mode
+    (``/BM``).  All remaining keys (line width, dash pattern, caps,
+    miter limit, flatness, …) never affect the colour rewriting, so such
+    states pass through untouched.  Anything unresolvable → False (refuse
+    → raster fallback, ADR 0008 D2).
+    """
+    res = _resource_dict_str(doc, owner_xref)
+    m = re.search(r"/ExtGState\s*<<", res)
+    if not m:
+        return False
+    inner = res[m.end() - 2 :]
+    try:
+        end = _scan_dict(inner.encode("latin-1"), 0)
+    except VectorUnsupported:
+        return False
+    inner = inner[:end]
+    m2 = re.search(r"/" + re.escape(name) + r"\s+(\d+)\s+0\s+R", inner)
+    if not m2:
+        return False
+    try:
+        obj = doc.xref_object(int(m2.group(1)))
+    except Exception:
+        return False
+    for key in ("/ca", "/CA"):
+        mk = re.search(key + r"\s+([0-9.]+)", obj)
+        if mk:
+            try:
+                if float(mk.group(1)) < 0.9999:
+                    return False
+            except ValueError:
+                return False
+    mk = re.search(r"/SMask\s+(\S+)", obj)
+    if mk and mk.group(1) != "/None":
+        return False
+    mk = re.search(r"/BM\s+/(\w+)", obj)
+    if mk and mk.group(1) != "Normal":
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # stream rewriter
 # ---------------------------------------------------------------------------
@@ -543,6 +659,7 @@ class _StreamRewriter:
         tol_pt: float,
         res: Dict[str, int],
         ctm0: Tuple[float, ...] = IDENTITY,
+        owner_xref: int = 0,
     ):
         self.doc = doc
         self.data = data
@@ -551,6 +668,10 @@ class _StreamRewriter:
         self.page_size = page_size
         self.tol_pt = tol_pt
         self.res = res
+        self.owner_xref = owner_xref
+        # per-owner resource lookups (static for the lifetime of the stream)
+        self._cs_map = _color_space_map(doc, owner_xref) if owner_xref else {}
+        self._gs_cache: Dict[str, bool] = {}
         self.toks = _tokenize(data)
         # output: token index -> insertions to place before that token
         self.insert_before: Dict[int, List[bytes]] = {}
@@ -694,21 +815,22 @@ class _StreamRewriter:
             elif op in _COLOR_OPS:
                 space, n, is_fill = _COLOR_OPS[op]
                 self._set_color(idx, op, space, n, is_fill)
-            elif op in ("sc", "SC"):
-                space = self.fill_space if op == "sc" else self.stroke_space
-                n = {"gray": 1, "rgb": 3, "cmyk": 4}[space]
-                self._set_color(idx, op, space, n, op == "sc")
-            elif op in ("scn", "SCN"):
-                raise VectorUnsupported("scn/SCN (extended colour values)")
+            elif op in ("sc", "scn"):
+                # `scn` has identical operand syntax to `sc` for every
+                # non-pattern space (the only difference is pattern
+                # colours, which are refused at `cs` time).
+                n = {"gray": 1, "rgb": 3, "cmyk": 4}[self.fill_space]
+                self._set_color(idx, op, self.fill_space, n, True)
+            elif op in ("SC", "SCN"):
+                n = {"gray": 1, "rgb": 3, "cmyk": 4}[self.stroke_space]
+                self._set_color(idx, op, self.stroke_space, n, False)
             elif op in ("cs", "CS"):
                 if idx < 1 or self.toks[idx - 1].kind != "name":
                     raise VectorUnsupported("malformed colour space selection")
                 nm = self.toks[idx - 1].value
-                sp = {
-                    "DeviceGray": "gray",
-                    "DeviceRGB": "rgb",
-                    "DeviceCMYK": "cmyk",
-                }.get(nm)
+                # literal device name, or a name defined in the owner's
+                # /Resources /ColorSpace (may itself be an indirect ref)
+                sp = _DEVICE_CS.get(nm, self._cs_map.get(nm))
                 if sp is None:
                     raise VectorUnsupported(f"unsupported colour space /{nm}")
                 if op == "cs":
@@ -716,7 +838,20 @@ class _StreamRewriter:
                 else:
                     self.stroke_space = sp
             elif op == "gs":
-                raise VectorUnsupported("ExtGState (transparency/blend) in content")
+                if idx < 1 or self.toks[idx - 1].kind != "name":
+                    raise VectorUnsupported("malformed gs operator")
+                nm = self.toks[idx - 1].value
+                if nm not in self._gs_cache:
+                    self._gs_cache[nm] = _extgstate_harmless(
+                        self.doc, self.owner_xref, nm
+                    )
+                if not self._gs_cache[nm]:
+                    raise VectorUnsupported(
+                        f"ExtGState /{nm} has transparency, blend mode or "
+                        "soft mask"
+                    )
+                # harmless state (opaque, unmasked): line width / dash /
+                # caps etc. never affect colours → passes through as-is
             elif op == "sh":
                 raise VectorUnsupported("shading operator")
             elif op == "BI":
@@ -733,17 +868,18 @@ class _StreamRewriter:
             elif op == "re":
                 x, y, w, h = self._lookback(idx, 4)
                 self.pts.extend([(x, y), (x + w, y), (x, y + h), (x + w, y + h)])
-            elif op in ("f", "f*"):
+            elif op in ("f", "f*", "F"):
+                # F = fill with the even-odd rule: a paint operator
                 self._decide_paint(idx, "fill", self._path_bbox())
                 self.pts = []
             elif op == "S":
                 self._decide_paint(idx, "stroke", self._path_bbox())
                 self.pts = []
-            elif op in ("s", "b", "b*"):
+            elif op in ("s", "b", "b*", "B", "B*"):
                 self._decide_paint(idx, "fill", self._path_bbox())
                 self._decide_paint(idx, "stroke", self._path_bbox())
                 self.pts = []
-            elif op in ("n", "F", "W", "W*"):
+            elif op in ("n", "W", "W*"):
                 self.pts = []
             elif op == "BT":
                 self.font_size = 12.0
@@ -907,6 +1043,7 @@ def rewrite_page_tree(
         tol_pt,
         res=page_res,
         ctm0=IDENTITY,
+        owner_xref=page.xref,
     )
     results: List[Tuple[str, object, bytes]] = [("page", None, rw.result())]
 
@@ -930,6 +1067,7 @@ def rewrite_page_tree(
             tol_pt,
             res=res,
             ctm0=ctm0,
+            owner_xref=xref,
         )
         results.append(("xref", xref, sub_rw.result()))
         pending.extend(sub_rw.dos)
