@@ -55,7 +55,7 @@ import numpy as np
 from . import processing
 from .cli import _plan_jobs, parse_keep_hex
 from .diagnostics import diagnose_pdf
-from .pdfpipeline import process_pdf
+from .pdfpipeline import NO_BOARD_SUMMARY, process_pdf
 from .processing import SmartboardError
 from .reveal import reveal_output
 
@@ -463,9 +463,12 @@ class SmartboardGUI:
             def no_board_line() -> str:
                 pages = [page for res in results for page in res.pages]
                 if pages and not any(page.detected for page in pages):
+                    # same wording as the CLI warning, sentence case for
+                    # the dialog
                     return (
-                        "\n\nNo smartboard region detected on any page — "
-                        "the output is an unchanged copy of the input."
+                        "\n\n"
+                        + NO_BOARD_SUMMARY[0].upper()
+                        + NO_BOARD_SUMMARY[1:]
                     )
                 return ""
 

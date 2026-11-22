@@ -166,7 +166,20 @@ Drei Reibungspunkte der Zielgruppe (Lehrende ohne Python-Vorkenntnisse):
    Linux-Systembeschränkung.
 2. Windows-Pfade mit Anführungszeichen brechen
    `explorer /select,"…"` (pathologisch; wie bei start.bat dokumentiert).
-3. Headless-Betrieb (SSH ohne Desktop): Der Button meldet sanft „could not
-   open the file manager" im Log, kein Crash.
-4. Root-Permissionstests sind in der Dev-Box wertlos → der
+3. Headless-Betrieb (SSH ohne Desktop): Fehlt der Opener (typisch
+   headless), meldet der Button sanft „could not open the file manager"
+   im Log (kein Crash). Ist `xdg-open` installiert, aber keine
+   Desktop-Session aktiv, startet `Popen` erfolgreich und der Button tut
+   still nix (Rückgabe `True`) — für GUI-Nutzer praktisch irrelevant
+   (GUI-User haben per Definition einen Desktop).
+4. Doppel-Fehler-Edge-Case: Ist die Eingabe defekt **und** der
+   Output-Pfad blockiert, feuert der Output-Guard zuerst (korrekte
+   Kausalität), die Diagnose meldet aber die Dateiproblematik („not a
+   valid PDF") statt „cannot create output directory" — die
+   Datei-Meldung ist wahr, verdeckt aber die Ursache dieses konkreten
+   Laufs.
+5. Die Preview rendert Sonderfall-Dateien (verschlüsselt/kaputt) noch
+   mit rohen Meldungen — der ADR-Scope von D2 deckt nur den Run-Pfad ab
+   (Phase-11-Kandidat: `diagnose_pdf`-Precheck auch in `preview()`).
+6. Root-Permissionstests sind in der Dev-Box wertlos → der
    Output-Fehlerfall wird über „Pfad durch eine Datei" getestet.

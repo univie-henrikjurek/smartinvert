@@ -53,6 +53,14 @@ logger = logging.getLogger(__name__)
 #: Progress callback: ``(page_number_1based, total_pages)`` after each page.
 ProgressCallback = Callable[[int, int], None]
 
+#: User-facing summary line when no board was detected on any page of any
+#: successful job (ADR 0011, D2 / P10-FR-6) — shared by the CLI warning and
+#: the GUI Done dialog (which capitalizes the first letter).
+NO_BOARD_SUMMARY = (
+    "no smartboard region detected on any page of the processed files — "
+    "the output is an unchanged copy of the input."
+)
+
 
 @dataclass
 class PageResult:
@@ -183,7 +191,14 @@ def process_pdf(
             f"{e.strerror or e}"
         ) from e
     if debug_dir is not None:
-        Path(debug_dir).expanduser().mkdir(parents=True, exist_ok=True)
+        debug_path = Path(debug_dir).expanduser()
+        # ADR 0011, D2: same clear-error treatment as the output directory.
+        try:
+            debug_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise SmartboardError(
+                f"cannot create debug directory '{debug_path}': {e.strerror or e}"
+            ) from e
 
     try:
         src = fitz.open(str(input_path))

@@ -12,8 +12,10 @@ run, file *marked*) or at the output folder (batch run):
   Einschränkungen" #1).
 
 The opener is started non-blocking (``subprocess.Popen``).  A missing
-opener or a headless system (SSH without a desktop) produces a log warning
-and ``False`` — the tool itself never crashes because of it.
+opener *binary* (typical on headless systems) produces a log warning and
+``False`` — the tool itself never crashes because of it.  (If the opener
+binary exists but no desktop session is running, ``Popen`` succeeds and
+the file manager simply does not appear — nothing to warn about.)
 """
 
 from __future__ import annotations
@@ -57,8 +59,8 @@ def reveal_output(target: "str | Path") -> bool:
     """Open the file manager at *target* (non-blocking).
 
     Returns ``True`` when the opener process was started.  A missing
-    opener or a headless system produces a warning and ``False`` — never
-    an exception (ADR 0011, D3).
+    opener binary produces a warning and ``False`` — never an exception
+    (ADR 0011, D3).
     """
     cmd = reveal_argv(target)
     if cmd is None:

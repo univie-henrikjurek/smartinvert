@@ -98,7 +98,10 @@ class TestRevealOutput:
         assert reveal.reveal_output(f) is True
         assert started, "Popen must be called"
         cmd, kwargs = started[0]
-        assert cmd[0] == "xdg-open"  # this test runs on Linux
+        # the started command must match the pure argv construction for
+        # whatever platform this runs on (no hardcoded opener name)
+        expected_exe, expected_args = reveal.reveal_argv(f)
+        assert cmd == [expected_exe, *expected_args]
         # the opener must not flood the terminal
         assert kwargs.get("stdout") is not None
         assert kwargs.get("stderr") is not None

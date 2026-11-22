@@ -55,7 +55,8 @@ def _dummy_pdf(tmp_path: Path) -> Path:
     """
     p = tmp_path / "in.pdf"
     if not p.exists():
-        import fitz
+        # project compat shim (PyMuPDF 2.x deprecates `import fitz`)
+        from smartboard_invert.processing import fitz
 
         doc = fitz.open()
         doc.new_page()
@@ -191,6 +192,10 @@ class TestSimplifiedOptions:
         _run_start(app)
         assert calls, "process_pdf was not called"
         assert calls[0][1]["keep_colors"] == frozenset({"red", "green"})
+        # P10-FR-2: the untouched default run reaches process_pdf with the
+        # historical values exactly (byte-identical behaviour)
+        assert calls[0][1]["invert"] is True
+        assert calls[0][1]["bg_target"] is None
 
 
 class TestAdvancedOptionsSection:
@@ -583,7 +588,7 @@ class TestWorkerFailureDiagnosis:
         )
         ind = tmp_path / "inputs"
         ind.mkdir()
-        import fitz
+        from smartboard_invert.processing import fitz  # compat shim
 
         good = ind / "good.pdf"  # a VALID pdf -> diagnose_pdf finds nothing
         doc = fitz.open()

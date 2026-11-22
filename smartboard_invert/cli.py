@@ -26,7 +26,7 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from . import __version__
 from .diagnostics import diagnose_pdf
-from .pdfpipeline import ProcessResult, process_pdf
+from .pdfpipeline import NO_BOARD_SUMMARY, ProcessResult, process_pdf
 from .processing import HexSegment, KEEPABLE_COLORS, SmartboardError
 
 logger = logging.getLogger(__name__)
@@ -427,7 +427,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     debug_dir = None
     if opts["debug"]:
         debug_dir = jobs[0][1].parent / "debug"
-        debug_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(
+                f"[ERROR] cannot create debug directory '{debug_dir}': "
+                f"{e.strerror or e}",
+                file=sys.stderr,
+            )
+            return 1
 
     failures = 0
     results: List[ProcessResult] = []
@@ -451,12 +459,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             failures += 1
             # ADR 0011, D2: file-level problems (encrypted / damaged /
             # empty) get the clear user-facing message instead of the raw
-            # pipeline error.
-            logger.error("Failed to process %s: %s", src, diagnose_pdf(src) or exc)
-        except Exception:  # unexpected errors must not crash the batch
+            # pipeline error (the raw error stays in the debug log).
+            diagnosis = diagnose_pdf(src)
+            if diagnosis:
+                logger.debug("raw pipeline error for %s: %s", src, exc)
+            logger.error("Failed to process %s: %s", src, diagnosis or exc)
+        except Exception as exc:  # unexpected errors must not crash the batch
             failures += 1
             diagnosis = diagnose_pdf(src)
             if diagnosis:
+                logger.debug("raw pipeline error for %s: %s", src, exc)
                 logger.error("Failed to process %s: %s", src, diagnosis)
             else:
                 logger.exception("Unexpected error while processing %s", src)
@@ -466,10 +478,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # input, which beginners would mistake for a successful inversion.
     all_pages = [page for res in results for page in res.pages]
     if all_pages and not any(page.detected for page in all_pages):
-        logger.warning(
-            "no smartboard region detected on any page — the output is an "
-            "unchanged copy of the input."
-        )
+        logger.warning(NO_BOARD_SUMMARY)
 
     if failures:
         logger.error("%d file(s) failed", failures)
