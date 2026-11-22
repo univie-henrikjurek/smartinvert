@@ -10,12 +10,14 @@ The GUI mirrors the CLI options but presents them in a graphical form:
   inversion the output quality no longer depends on the processing DPI,
   and for raster content the default is sufficient.  The CLI ``--dpi`` is
   unaffected.
-* Checkboxes for *Invert* and *Crop to board* (ADR 0005: the legacy CLAHE /
-  noise-cleaning / red / green checkboxes were removed).
-* *Target background* combobox (complement or pure white).
-* *Zusätzliche Hex-Farben* entry: explicit hex colours / ranges (e.g.
-  ``FF0000, 00FF00, 000001-0000FF``) left un-inverted, in addition to the
-  fixed red/green default (ADR 0004 / ADR 0005).
+* Options: "Auf Board zuschneiden" (crop, on by default) and the
+  *Target background* combobox (complement or pure white) stay directly
+  visible.  The advanced options (ADR 0011, D1) live in a collapsible
+  section (collapsed by default): the *Invert colours* checkbox, four
+  *Markerfarben erhalten* checkboxes (Rot/Grün/Blau/Gelb — default
+  Rot+Grün, i.e. today's ``keep_colors={red, green}``) and the
+  *Zusätzliche Hex-Farben* entry (explicit hex colours / ranges such as
+  ``FF0000, 00FF00, 000001-0000FF`` left un-inverted, ADR 0004).
 * A *Preview* button that shows the first page before/after processing.
 * A *Run* button that processes the entire document and displays a progress bar.
 
@@ -57,9 +59,16 @@ logger = logging.getLogger(__name__)
 #: index 1 = pure white).
 BG_TARGET_CHOICES = ("Complement (255 − v)", "Reinweiß (255,255,255)")
 
-#: Marker colours the GUI always keeps un-inverted (fixed default, ADR 0005
-#: D2 — the former "Rot/Grün erhalten" checkboxes were removed as redundant).
-GUI_KEEP_COLORS = frozenset({"red", "green"})
+#: (widget attribute, CLI colour name) pairs for the "Markerfarben
+#: erhalten" checkboxes (ADR 0011, D1 — replaces the fixed
+#: keep_colors={red, green} of ADR 0005 D2).  Defaults: red + green
+#: checked (= the historical default behaviour).
+MARKER_COLOUR_VARS = (
+    ("keep_red_var", "Rot", "red"),
+    ("keep_green_var", "Grün", "green"),
+    ("keep_blue_var", "Blau", "blue"),
+    ("keep_yellow_var", "Gelb", "yellow"),
+)
 
 
 class SmartboardGUI:
@@ -99,18 +108,17 @@ class SmartboardGUI:
         # ---------- Options ----------
         # ADR 0009: no DPI control — the GUI processes at the pipeline
         # default (150 dpi); the CLI --dpi remains for power users.
+        # ADR 0011, D1: only the everyday options stay directly visible;
+        # the advanced options (invert / marker colours / hex entry) live
+        # in a collapsible section, collapsed by default.
         opts_frame = Frame(self.master)
         opts_frame.pack(fill="x", padx=10, pady=5)
-        # Checkboxes (ADR 0005: CLAHE / noise cleaning / red / green
-        # checkboxes removed – the hex field is the colour fine control)
-        self.invert_var = IntVar(value=1)
-        Checkbutton(opts_frame, text="Invert colours", variable=self.invert_var).grid(row=0, column=0, columnspan=2, sticky="w")
         # crop is ON by default (ADR 0006, v0.7.1): the page should contain
         # only the visible board area
         self.crop_var = IntVar(value=1)
-        Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=1, column=0, columnspan=2, sticky="w")
+        Checkbutton(opts_frame, text="Auf Board zuschneiden (Rand entfernen)", variable=self.crop_var).grid(row=0, column=0, columnspan=2, sticky="w")
         # Target background (v0.5.0)
-        Label(opts_frame, text="Zielhintergrund:").grid(row=2, column=0, sticky="w")
+        Label(opts_frame, text="Zielhintergrund:").grid(row=1, column=0, sticky="w")
         self.bg_var = StringVar(value=BG_TARGET_CHOICES[0])
         # readonly by design; _reset_ui() restores the state after the
         # generic enable/disable walk of _set_controls_state()
@@ -121,17 +129,48 @@ class SmartboardGUI:
             state="readonly",
             width=28,
         )
-        self.bg_combo.grid(row=2, column=1, columnspan=2, sticky="w", padx=5)
+        self.bg_combo.grid(row=1, column=1, columnspan=2, sticky="w", padx=5)
+
+        # ---------- Advanced options (ADR 0011, D1) ----------
+        # Collapsed by default so the beginner view stays minimal.  The
+        # toggle button is walked by _set_controls_state() like every other
+        # control (disabled while a run is in progress).
+        self.advanced_btn = Button(
+            self.master,
+            text="▸ Erweiterte Optionen",
+            command=self._toggle_advanced,
+        )
+        self.advanced_btn.pack(anchor="w", padx=12, pady=(0, 2))
+        # Not packed initially = hidden.  Toggling only maps/unmaps the
+        # frame, so expanding never resets an option's state.
+        self.advanced_frame = Frame(self.master)
+        self.invert_var = IntVar(value=1)
+        Checkbutton(
+            self.advanced_frame, text="Invert colours", variable=self.invert_var
+        ).grid(row=0, column=0, columnspan=4, sticky="w")
+        Label(
+            self.advanced_frame, text="Markerfarben erhalten:"
+        ).grid(row=1, column=0, columnspan=4, sticky="w")
+        for col, (attr, label, _cli_name) in enumerate(MARKER_COLOUR_VARS):
+            default_on = _cli_name in ("red", "green")  # historical default
+            setattr(self, attr, IntVar(value=1 if default_on else 0))
+            Checkbutton(
+                self.advanced_frame, text=label, variable=getattr(self, attr)
+            ).grid(row=2, column=col, sticky="w", padx=(0, 14) if col < 3 else 0)
         # Explicit hex colours / ranges left un-inverted (ADR 0004); empty =
         # off.  Parsed in the main thread before the worker starts (see
         # _parse_keep_hex); the field is intentionally NOT cleared after a run.
-        Label(opts_frame, text="Zusätzliche Hex-Farben:").grid(row=3, column=0, sticky="w")
-        self.keep_hex_entry = Entry(opts_frame, width=44)
-        self.keep_hex_entry.grid(row=3, column=1, columnspan=2, sticky="w", padx=5)
+        # It stays a writable Entry — architecture prep for the later
+        # colour-picker idea (ADR 0011, D4).
+        Label(self.advanced_frame, text="Zusätzliche Hex-Farben:").grid(
+            row=3, column=0, sticky="w"
+        )
+        self.keep_hex_entry = Entry(self.advanced_frame, width=44)
+        self.keep_hex_entry.grid(row=3, column=1, columnspan=3, sticky="w", padx=5)
         Label(
-            opts_frame,
-            text="(z.B. FF0000, 00FF00, 000001-0000FF — leer = aus; rot/grün bleiben immer erhalten)",
-        ).grid(row=4, column=0, columnspan=3, sticky="w")
+            self.advanced_frame,
+            text="(z.B. FF0000, 00FF00, 000001-0000FF — leer = aus)",
+        ).grid(row=4, column=0, columnspan=4, sticky="w")
 
         # ---------- Preview ----------
         preview_frame = Frame(self.master)
@@ -153,14 +192,42 @@ class SmartboardGUI:
         Read in the calling (main) thread and handed over as plain values –
         the same rule the thread-safe event queue is built on.
 
-        ``keep_colors`` is fixed to the documented default ``{red, green}``
-        (ADR 0005, D2): the red/green checkboxes were removed as redundant —
-        the hex-keep entry is the fine control and unions with red/green.
+        ``keep_colors`` is the set of checked "Markerfarben erhalten"
+        checkboxes (ADR 0011, D1 — replaces the fixed ``{red, green}`` of
+        ADR 0005 D2); the defaults (Rot+Grün checked) reproduce the
+        historical behaviour exactly.
         """
+        keep = {
+            cli_name
+            for attr, _label, cli_name in MARKER_COLOUR_VARS
+            if getattr(self, attr).get()
+        }
         return {
             "bg_target": None if self.bg_var.get() == BG_TARGET_CHOICES[0] else (255, 255, 255),
-            "keep_colors": GUI_KEEP_COLORS,
+            "keep_colors": frozenset(keep),
         }
+
+    def _toggle_advanced(self) -> None:
+        """Show/hide the advanced options frame (ADR 0011, D1).
+
+        The frame is only mapped/unmapped — its widgets keep their state,
+        so expanding the section never resets an option.
+        """
+        if self.advanced_frame.winfo_manager():
+            self.advanced_frame.pack_forget()
+            self.advanced_btn.configure(text="▸ Erweiterte Optionen")
+        else:
+            self.advanced_frame.pack(
+                fill="x", padx=10, pady=(0, 5), after=self.advanced_btn
+            )
+            self.advanced_btn.configure(text="▾ Erweiterte Optionen")
+        self._adjust_window_height()
+
+    def _adjust_window_height(self) -> None:
+        """Grow the fixed-geometry window to fit the (advanced) content."""
+        self.master.update_idletasks()
+        height = max(700, self.master.winfo_reqheight())
+        self.master.geometry(f"660x{height}")
 
     def _parse_keep_hex(self):
         """Parse the hex-keep entry (main thread, single choke point).

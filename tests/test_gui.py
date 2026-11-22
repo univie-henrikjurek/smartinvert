@@ -98,16 +98,33 @@ class TestSimplifiedOptions:
 
     def test_removed_controls_do_not_exist(self, tk_root):
         app = gui.SmartboardGUI(tk_root)
-        for attr in ("clahe_var", "clean_var", "keep_red_var", "keep_green_var"):
+        # ADR 0005: the legacy CLAHE / noise-cleaning checkboxes are gone.
+        # (The former keep_red_var/keep_green_var pair is back again — in
+        # extended form — in the advanced section; ADR 0011 D1 supersedes
+        # ADR 0005 D2 on that point.)
+        for attr in ("clahe_var", "clean_var"):
             assert not hasattr(app, attr), f"{attr} must be removed (ADR 0005)"
         # ADR 0009: the DPI slider (and its variable / readout label) is
-        # gone from the GUI
+        # gone from the GUI (ADR 0011 D1 keeps it out of the advanced
+        # section as well)
         for attr in ("dpi_var", "dpi_slider", "dpi_value"):
             assert not hasattr(app, attr), f"{attr} must be removed (ADR 0009)"
 
     def test_remaining_controls_exist(self, tk_root):
         app = gui.SmartboardGUI(tk_root)
-        for attr in ("invert_var", "crop_var", "bg_var", "keep_hex_entry"):
+        for attr in (
+            "invert_var",
+            "crop_var",
+            "bg_var",
+            "keep_hex_entry",
+            # ADR 0011 D1: advanced section + marker-colour checkboxes
+            "advanced_btn",
+            "advanced_frame",
+            "keep_red_var",
+            "keep_green_var",
+            "keep_blue_var",
+            "keep_yellow_var",
+        ):
             assert hasattr(app, attr), f"{attr} must still exist"
 
     def test_no_dpi_reaches_process_pdf(self, tk_root, monkeypatch, tmp_path):
@@ -151,6 +168,71 @@ class TestSimplifiedOptions:
         _run_start(app)
         assert calls, "process_pdf was not called"
         assert calls[0][1]["keep_colors"] == frozenset({"red", "green"})
+
+
+class TestAdvancedOptionsSection:
+    """ADR 0011, D1: the advanced options (invert + marker colours + hex
+    entry) live in a section that is collapsed by default; the four
+    marker-colour checkboxes replace the fixed {red, green} default."""
+
+    def test_advanced_section_hidden_by_default(self, tk_root):
+        app = gui.SmartboardGUI(tk_root)
+        assert app.advanced_frame.winfo_manager() == "", (
+            "the advanced section must be collapsed by default"
+        )
+        assert "▸" in app.advanced_btn.cget("text")
+
+    def test_toggle_shows_and_hides_advanced_section(self, tk_root):
+        app = gui.SmartboardGUI(tk_root)
+        app._toggle_advanced()
+        assert app.advanced_frame.winfo_manager() == "pack"
+        assert "▾" in app.advanced_btn.cget("text")
+        app._toggle_advanced()
+        assert app.advanced_frame.winfo_manager() == ""
+        assert "▸" in app.advanced_btn.cget("text")
+
+    def test_marker_colour_defaults_are_red_green(self, tk_root):
+        app = gui.SmartboardGUI(tk_root)
+        assert app.keep_red_var.get() == 1
+        assert app.keep_green_var.get() == 1
+        assert app.keep_blue_var.get() == 0
+        assert app.keep_yellow_var.get() == 0
+        # defaults reproduce the historical fixed behaviour exactly
+        assert app._transform_options()["keep_colors"] == frozenset({"red", "green"})
+
+    def test_marker_colours_reach_process_pdf(self, tk_root, monkeypatch, tmp_path):
+        calls = []
+
+        def fake_process_pdf(*args, **kwargs):
+            calls.append((args, kwargs))
+            from smartboard_invert.pdfpipeline import ProcessResult
+
+            return ProcessResult(input_path=args[0], output_path=args[1])
+
+        monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
+        app = gui.SmartboardGUI(tk_root)
+        app._toggle_advanced()
+        app.keep_red_var.set(0)  # keep green + blue only
+        app.keep_blue_var.set(1)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(_dummy_pdf(tmp_path)))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        _run_start(app)
+        assert calls, "process_pdf was not called"
+        assert calls[0][1]["keep_colors"] == frozenset({"green", "blue"})
+
+    def test_all_marker_colours_off_means_empty_set(self, tk_root):
+        app = gui.SmartboardGUI(tk_root)
+        app._toggle_advanced()
+        for var in (
+            app.keep_red_var,
+            app.keep_green_var,
+            app.keep_blue_var,
+            app.keep_yellow_var,
+        ):
+            var.set(0)
+        assert app._transform_options()["keep_colors"] == frozenset()
 
 
 class TestKeepHexEntry:
