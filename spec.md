@@ -371,3 +371,34 @@ Schriftzug-Änderungen).
   `--use-standard` (fail-safe, kein stiller Fallback).
 
 ---
+
+## Phase 10 — GUI-QoL: erweiterte Optionen, Sonderfall-Meldungen, Speicherort öffnen (v0.9.0-dev, 2026-11-22)
+
+User-Anfrage: GUI-Verbesserungen — einklappbare erweiterte Optionen, klare
+Sonderfall-Meldungen, „Speicherordner öffnen"-Button im Erfolgspopup.
+Grundlage: [ADR 0011](docs/adr/0011-gui-qo-erweiterte-optionen-sonderfaelle-speicherort.md).
+Branch `feature/gui-qol` (gedockt auf `feature/byo-env`). **Presets und
+Tkinter-Politur sind bewusst ausgeklammert** (Phase 11+); ein browser-basiertes
+GUI ist verworfen.
+
+### 10.1 Anforderungen
+
+| # | Anforderung | Beschreibung |
+|---|-------------|--------------|
+| **P10‑FR‑1** | Einklappbare erweiterte Optionen | Der GUI-Optionsbereich zeigt standardmäßig nur „Auf Board zuschneiden" + „Zielhintergrund". Ein Toggle-Button („Erweiterte Optionen") zeigt/versteckt: „Invert colours"-Checkbox (Default an), vier Markerfarben-Checkboxen Rot/Grün/Blau/Gelb (Default Rot+Grün = heutiges `keep_colors`) und das Hex-Farben-Entry (Default leer). **DPI bleibt aus dem GUI** (ADR 0009). |
+| **P10‑FR‑2** | Default-Verhalten unverändert | Bei ungeänderten Defaults ergibt sich exakt der heutige `process_pdf`-Aufruf (invert=True, crop=True, bg_target=None, keep_colors={red,green}, keep_segments=(), kein dpi-Parameter). |
+| **P10‑FR‑3** | Sonderfall: passwortgeschützt | Ein verschlüsseltes PDF (User-Passwort) erzeugt eine klare Meldung („is password-protected … remove the password first") statt Traceback/„unexpected error". CLI: Datei zählt als Failure (Batch fährt weiter), exit=1. GUI (Single-File): Dialog **vor** Worker-Start. |
+| **P10‑FR‑4** | Sonderfall: ungültige / leere Datei | Nicht-PDF-Bytes → „not a valid PDF (damaged or not a PDF at all)"; 0-Seiten-PDF → „contains no pages". Gleiche CLI/GUI-Semantik wie P10-FR-3. |
+| **P10‑FR‑5** | Sonderfall: Output nicht anlegbar | Das Output-Verzeichnis lässt sich nicht anlegen (z. B. Pfad durch eine Datei) → klare Meldung „cannot create output directory …". |
+| **P10‑FR‑6** | „Kein Board"-Zusammenfassung | Wurde auf keiner Seite ein Board erkannt, gibt die CLI eine Abschluss-Warnung („output is an unchanged copy of the input") aus; das GUI zeigt die Info zusätzlich im Done-Dialog. |
+| **P10‑FR‑7** | „Speicherordner öffnen" | Der Done-Dialog (eigener Toplevel statt messagebox) bietet den Button „Speicherordner öffnen": Windows `explorer /select` (Datei markiert), macOS `open -R`, Linux `xdg-open <ordner>`; Batch → Output-Ordner. Fehlender Opener → sanfte Log-Warnung, kein Crash. |
+
+### 10.2 Abgrenzung
+
+* CLI-Verhalten bei gültigen Eingaben bleibt unverändert (neue Meldungen sind
+  additive).
+* Das Hex-Feld bleibt ein schreibbares `Entry` und die Preview rendert das
+  Original weiter — Architektur-Vorbereitung für den späteren Farb-Picker
+  (ADR 0011, D4; jetzt nicht implementiert).
+
+---
