@@ -113,13 +113,21 @@ Drei Reibungspunkte der Zielgruppe (Lehrende ohne Python-Vorkenntnisse):
 * Neues Modul `smartboard_invert/reveal.py`:
   * `reveal_output(target: Path)` — öffnet den Dateimanager bei der
     Output-Datei bzw. dem Output-Ordner.
-  * `reveal_argv(target: Path) -> Optional[Tuple[str, list[str]]]` — reine
-    argv-Konstruktion (ohne Prozess-Start testbar):
+  * `reveal_command(target: Path) -> Optional[Union[str, list[str]]]` —
+    reine Command-Konstruktion (ohne Prozess-Start testbar); liefert
+    exakt das, was `subprocess.Popen` bekommt:
     - `win32`: Datei → `explorer /select,"<abs>"` (Datei wird **markiert**);
-      Ordner → `explorer "<abs>"`
+      Ordner → `explorer "<abs>"` — übergeben als **Commandline-String**,
+      keine Liste: `Popen` übergibt Strings unverändert an
+      `CreateProcess`, eine Liste dagegen durch `list2cmdline`, das die
+      eingebetteten Doppel-Quotes von `/select,"<path>"` erneut
+      an-quote/backslash-escapec — das kann Explorer nicht parsen und
+      öffnet „Dieser PC" statt den Dateifolder (Regression-Fix
+      2026-11-22, User-Report).
     - `darwin`: Datei → `open -R "<abs>"`; Ordner → `open "<abs>"`
+      (argv-Liste; eingebettete Quotes sind dort nicht nötig)
     - `linux`: `xdg-open "<Ordner>"` (Datei → ihr Elternordner; xdg-open
-      kennt kein standardmäßiges Datei-Markieren)
+      kennt kein standardmäßiges Datei-Markieren) (argv-Liste)
   * Aufruf via `subprocess.Popen` (non-blocking); fehlender Opener /
     headless → `logger.warning`, kein Crash.
 * Der Fehler-Dialog („Some files failed") bleibt MessageBox ohne Button.

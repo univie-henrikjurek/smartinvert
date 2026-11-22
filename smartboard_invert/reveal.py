@@ -5,7 +5,9 @@ hand — it opens the platform file manager at the output file (single-file
 run, file *marked*) or at the output folder (batch run):
 
 * Windows: ``explorer /select,"<file>"`` (file marked) /
-  ``explorer "<folder>"``.
+  ``explorer "<folder>"``.  The command is passed to ``Popen`` as a single
+  **command-line string** — see the note in :func:`reveal_command` why an
+  argv *list* breaks ``/select`` on Windows.
 * macOS:   ``open -R <file>`` (file marked) / ``open <folder>``.
 * Linux:   ``xdg-open "<folder>"`` — the file's *parent folder*; ``xdg-open``
   has no standard way to mark a single file (ADR 0011, "Bekannte
@@ -24,34 +26,54 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+#: Exactly what is handed to ``subprocess.Popen``: a command-line *string*
+#: on Windows (passed verbatim to ``CreateProcess``) or an argv *list* on
+#: macOS/Linux (a list is required there — a string would not be split).
+Command = Union[str, List[str]]
 
-def reveal_argv(target: "str | Path") -> Optional[Tuple[str, List[str]]]:
-    """Build the platform-specific opener command for *target*.
+
+def reveal_command(target: "str | Path") -> Optional[Command]:
+    """Build exactly what to pass to ``subprocess.Popen`` for *target*.
 
     Pure function (no process is spawned) so the platform logic is
-    testable without a file manager.  Returns ``(executable, args)`` or
-    ``None`` on platforms without a known opener.
+    testable without a file manager:
+
+    * Windows + file    → ``'explorer /select,"<file>"'``  (file marked)
+    * Windows + folder  → ``'explorer "<folder>"'``
+    * macOS + file      → ``['open', '-R', '<file>']``    (file marked)
+    * macOS + folder    → ``['open', '<folder>']``
+    * Linux             → ``['xdg-open', '<folder>']``    (parent folder)
+    * unknown platform  → ``None``
+
+    The Windows cases return a **string**, not a list: ``Popen`` passes a
+    string to ``CreateProcess`` verbatim, whereas a list goes through
+    ``subprocess.list2cmdline``, which would wrap the
+    ``/select,"<path>"`` argument in extra quotes and backslash-escape its
+    inner quotes — a command line explorer cannot parse, so it opens
+    "This PC" instead of selecting the file (regression, found on
+    Windows; ADR 0011, D3).  On macOS/Linux the arguments contain no
+    embedded quotes, so a list (and thus ``list2cmdline``-safe quoting)
+    is fine.
+
+    Windows paths containing quote characters remain a documented
+    pathological case (ADR 0011, "Bekannte Einschränkungen" #2).
     """
     target = Path(target).expanduser().resolve()
     if sys.platform == "win32":
         if target.is_dir():
-            return ("explorer", [str(target)])
-        # The double quotes are part of the argument on purpose: explorer
-        # requires /select,"<path>" (quoting matters for paths with spaces).
-        # Windows paths containing quote characters break this (documented
-        # pathological case, ADR 0011 "Bekannte Einschränkungen" #2).
-        return ("explorer", [f'/select,"{target}"'])
+            return f'explorer "{target}"'
+        return f'explorer /select,"{target}"'
     if sys.platform == "darwin":
         if target.is_dir():
-            return ("open", [str(target)])
-        return ("open", ["-R", str(target)])
+            return ["open", str(target)]
+        return ["open", "-R", str(target)]
     if sys.platform.startswith("linux"):
         folder = target if target.is_dir() else target.parent
-        return ("xdg-open", [str(folder)])
+        return ["xdg-open", str(folder)]
     return None
 
 
@@ -62,14 +84,13 @@ def reveal_output(target: "str | Path") -> bool:
     opener binary produces a warning and ``False`` — never an exception
     (ADR 0011, D3).
     """
-    cmd = reveal_argv(target)
+    cmd = reveal_command(target)
     if cmd is None:
         logger.warning("no file manager opener available on this platform")
         return False
-    executable, args = cmd
     try:
         subprocess.Popen(
-            [executable, *args],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
