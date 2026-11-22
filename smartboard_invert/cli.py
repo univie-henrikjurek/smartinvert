@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from . import __version__
-from .pdfpipeline import process_pdf
+from .diagnostics import diagnose_pdf
+from .pdfpipeline import ProcessResult, process_pdf
 from .processing import HexSegment, KEEPABLE_COLORS, SmartboardError
 
 logger = logging.getLogger(__name__)
@@ -429,6 +430,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         debug_dir.mkdir(parents=True, exist_ok=True)
 
     failures = 0
+    results: List[ProcessResult] = []
     for src, dst in jobs:
         logger.info("Processing %s -> %s", src, dst)
         try:
@@ -443,13 +445,31 @@ def main(argv: Optional[List[str]] = None) -> int:
                 keep_colors=keep_colors,
                 keep_segments=keep_hex,
             )
+            results.append(result)
             logger.info("Done: %s", result.summary())
         except SmartboardError as exc:
-            logger.error("Failed to process %s: %s", src, exc)
             failures += 1
+            # ADR 0011, D2: file-level problems (encrypted / damaged /
+            # empty) get the clear user-facing message instead of the raw
+            # pipeline error.
+            logger.error("Failed to process %s: %s", src, diagnose_pdf(src) or exc)
         except Exception:  # unexpected errors must not crash the batch
-            logger.exception("Unexpected error while processing %s", src)
             failures += 1
+            diagnosis = diagnose_pdf(src)
+            if diagnosis:
+                logger.error("Failed to process %s: %s", src, diagnosis)
+            else:
+                logger.exception("Unexpected error while processing %s", src)
+
+    # ADR 0011, D2 / P10-FR-6: summary warning when no board was detected
+    # on any page of any successful job — the output is just a copy of the
+    # input, which beginners would mistake for a successful inversion.
+    all_pages = [page for res in results for page in res.pages]
+    if all_pages and not any(page.detected for page in all_pages):
+        logger.warning(
+            "no smartboard region detected on any page — the output is an "
+            "unchanged copy of the input."
+        )
 
     if failures:
         logger.error("%d file(s) failed", failures)

@@ -50,6 +50,7 @@ import numpy as np
 
 from . import processing
 from .cli import _plan_jobs, parse_keep_hex
+from .diagnostics import diagnose_pdf
 from .pdfpipeline import process_pdf
 from .processing import SmartboardError
 
@@ -350,6 +351,16 @@ class SmartboardGUI:
         keep_segments = self._parse_keep_hex()
         if keep_segments is None:
             return
+        # ADR 0011, D2: pre-check a single-file input for file-level
+        # problems (password-protected / damaged / no pages / missing)
+        # BEFORE anything else runs — fail-fast with a clear dialog, no
+        # worker.  Folder inputs are clarified per file in the worker loop
+        # instead (the batch keeps going, like the CLI).
+        if not Path(pdf_path).is_dir():
+            problem = diagnose_pdf(pdf_path)
+            if problem is not None:
+                messagebox.showerror("Cannot process", problem)
+                return
         # Read the Tk variables in the main thread (Tk thread-safety) and hand
         # plain values to the worker.
         # ADR 0009: no "dpi" here — process_pdf's default (150) applies.
@@ -411,6 +422,7 @@ class SmartboardGUI:
 
             total = len(jobs)
             failures: list = []
+            results = []
             last_result = None
             for idx, (src, dst) in enumerate(jobs):
                 try:
@@ -426,14 +438,31 @@ class SmartboardGUI:
                         # file-level (below) for batches.
                         progress=on_progress if total == 1 else None,
                     )
+                    results.append(last_result)
                 except SmartboardError as e:
                     logger.error("Failed to process %s: %s", src, e)
-                    failures.append(f"{src.name}: {e}")
+                    # ADR 0011, D2: file-level problems get the clear
+                    # user-facing message instead of the raw pipeline error.
+                    failures.append(f"{src.name}: {diagnose_pdf(src) or e}")
                 except Exception:  # a bad file must not kill the batch
                     logger.exception("Unexpected error while processing %s", src)
-                    failures.append(f"{src.name}: unexpected error (see log)")
+                    failures.append(
+                        f"{src.name}: "
+                        f"{diagnose_pdf(src) or 'unexpected error (see log)'}"
+                    )
                 if total > 1:
                     on_progress(idx + 1, total)
+
+            # ADR 0011, D2 / P10-FR-6: extra Done-dialog line when no board
+            # was detected on any page — the output is just a copy.
+            def no_board_line() -> str:
+                pages = [page for res in results for page in res.pages]
+                if pages and not any(page.detected for page in pages):
+                    return (
+                        "\n\nNo smartboard region detected on any page — "
+                        "the output is an unchanged copy of the input."
+                    )
+                return ""
 
             if failures:
                 detail = "\n".join(failures[:5])
@@ -446,9 +475,15 @@ class SmartboardGUI:
                     error=True,
                 )
             elif total == 1:
-                dialog("Done", f"Saved to {jobs[0][1]}\n{last_result.summary()}")
+                dialog(
+                    "Done",
+                    f"Saved to {jobs[0][1]}\n{last_result.summary()}{no_board_line()}",
+                )
             else:
-                dialog("Done", f"Saved {total} file(s) to {jobs[0][1].parent}")
+                dialog(
+                    "Done",
+                    f"Saved {total} file(s) to {jobs[0][1].parent}{no_board_line()}",
+                )
         finally:
             # Re‑enable UI components (executed on the main thread).
             self._events.put(self._reset_ui)

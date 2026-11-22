@@ -173,7 +173,15 @@ def process_pdf(
         raise SmartboardError(f"input PDF not found: {input_path}")
     if input_path == output_path:
         raise SmartboardError("output path must differ from the input path")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # ADR 0011, D2: a blocked output path (e.g. the parent is an existing
+    # file) gets a clear SmartboardError instead of a raw FileExistsError.
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise SmartboardError(
+            f"cannot create output directory '{output_path.parent}': "
+            f"{e.strerror or e}"
+        ) from e
     if debug_dir is not None:
         Path(debug_dir).expanduser().mkdir(parents=True, exist_ok=True)
 
@@ -181,6 +189,12 @@ def process_pdf(
         src = fitz.open(str(input_path))
     except Exception as e:
         raise SmartboardError(f"unable to open PDF {input_path}: {e}") from e
+
+    # ADR 0011, D2: an empty (0-page) PDF would die deep inside fitz's
+    # save() with a raw ValueError — fail early with a clear message.
+    if src.page_count == 0:
+        src.close()
+        raise SmartboardError(f"'{input_path.name}' contains no pages")
 
     out_doc = fitz.open()
     result = ProcessResult(input_path=input_path, output_path=output_path)

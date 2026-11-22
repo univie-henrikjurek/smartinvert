@@ -985,6 +985,36 @@ class TestProcessPdfPhase3Validation:
         assert len(result.pages) == 1
 
 
+class TestPipelineGuards:
+    """ADR 0011, D2: file-level problems get a clear SmartboardError instead
+    of a raw MuPDF/pathlib exception."""
+
+    def test_zero_page_input_raises_clear_error(self, tmp_path):
+        src = synth.make_zero_page_pdf(tmp_path / "empty.pdf")
+        with pytest.raises(SmartboardError, match="contains no pages"):
+            process_pdf(src, tmp_path / "out.pdf")
+
+    def test_output_path_blocked_by_file_raises_clear_error(self, tmp_path):
+        """The output parent path exists as a FILE -> mkdir fails; the user
+        gets an actionable message instead of a raw FileExistsError
+        (root-permission variants are worthless in the dev box, ADR 0011
+        'Bekannte Einschränkungen' #4)."""
+        blocker = tmp_path / "blocker.txt"
+        blocker.write_text("i am a file, not a directory")
+        src = tmp_path / "in.pdf"
+        make_pdf(src, [{"kind": "blank"}])
+        with pytest.raises(SmartboardError, match="cannot create output directory"):
+            process_pdf(src, blocker / "out.pdf")
+
+    def test_zero_page_guard_fires_before_any_page_work(self, tmp_path):
+        """The guard must fire before processing (no output file created)."""
+        src = synth.make_zero_page_pdf(tmp_path / "empty.pdf")
+        dst = tmp_path / "out.pdf"
+        with pytest.raises(SmartboardError):
+            process_pdf(src, dst)
+        assert not dst.exists()
+
+
 #: Image-kind board 300x550 pt at the default scale 2.0 -> 600x1100 px image.
 NATIVE_W, NATIVE_H = 600, 1100
 #: Markers as ((x, y, w, h) in image px, BGR colour); both inside the board.

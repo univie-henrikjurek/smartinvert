@@ -85,6 +85,75 @@ class TestDirectoryBatch:
         assert "failed" in (result.stderr + result.stdout).lower()
 
 
+class TestSpecialCaseMessages:
+    """ADR 0011, D2 / P10-FR-3..6: damaged / encrypted / empty inputs get a
+    clear, user-facing message instead of a raw traceback / MuPDF message."""
+
+    def test_encrypted_single_file_fails_with_clear_message(self, tmp_path):
+        src = synth.make_encrypted_pdf(tmp_path / "secret.pdf")
+        result = run_cli("--input", str(src), "--output", str(tmp_path / "out.pdf"))
+        assert result.returncode == 1
+        text = result.stderr + result.stdout
+        assert "password-protected" in text.lower()
+        assert "remove the password" in text.lower()
+        assert "traceback" not in text.lower()
+
+    def test_encrypted_file_in_batch_keeps_going(self, tmp_path):
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        synth.make_encrypted_pdf(ind / "secret.pdf")
+        synth.make_pdf(ind / "good.pdf", [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        outd = tmp_path / "outputs"
+        result = run_cli("--input", str(ind), "--output", str(outd))
+        assert result.returncode == 1
+        assert (outd / "good.pdf").is_file()  # batch continued
+        text = (result.stderr + result.stdout).lower()
+        assert "password-protected" in text
+
+    def test_corrupt_file_gets_clear_message(self, tmp_path):
+        """The raw MuPDF 'Failed to open file … as type pdf' message is
+        replaced by the user-facing diagnosis (ADR 0011, D2)."""
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        synth.make_pdf(ind / "good.pdf", [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        (ind / "broken.pdf").write_bytes(b"this is not a pdf")
+        outd = tmp_path / "outputs"
+        result = run_cli("--input", str(ind), "--output", str(outd))
+        assert result.returncode == 1
+        text = result.stderr + result.stdout
+        assert "not a valid pdf" in text.lower()
+        assert "failed to open file" not in text.lower()
+
+    def test_zero_page_pdf_fails_with_clear_message(self, tmp_path):
+        src = synth.make_zero_page_pdf(tmp_path / "empty.pdf")
+        result = run_cli("--input", str(src), "--output", str(tmp_path / "out.pdf"))
+        assert result.returncode == 1
+        text = result.stderr + result.stdout
+        assert "contains no pages" in text.lower()
+        assert "traceback" not in text.lower()
+
+    def test_no_board_anywhere_prints_summary_warning(self, tmp_path):
+        """P10-FR-6: a successful run that found no board on any page gets a
+        closing warning that the output is just a copy of the input."""
+        src = tmp_path / "white.pdf"
+        synth.make_pdf(src, [{"kind": "blank", "marks": [(100, 100, 20, 40)]}])
+        result = run_cli("--input", str(src), "--output", str(tmp_path / "out.pdf"))
+        assert result.returncode == 0, result.stderr + result.stdout
+        text = (result.stderr + result.stdout).lower()
+        assert "no smartboard region detected on any page" in text
+        assert "unchanged copy of the input" in text
+
+    def test_board_found_no_summary_warning(self, tmp_path):
+        """A run that DOES find a board must not print the no-board warning."""
+        src = tmp_path / "board.pdf"
+        synth.make_pdf(src, [{"kind": "image", "rect": (150, 150, 300, 550), "bg": (0, 0, 0)}])
+        result = run_cli("--input", str(src), "--output", str(tmp_path / "out.pdf"))
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "no smartboard region detected on any page" not in (
+            result.stderr + result.stdout
+        ).lower()
+
+
 class TestSingleFile:
     def test_file_to_directory_same_name(self, tmp_path):
         src = tmp_path / "board.pdf"

@@ -18,6 +18,7 @@ import pytest
 pytest.importorskip("tkinter")
 
 from smartboard_invert import gui  # noqa: E402
+from smartboard_invert.pdfpipeline import PageResult, ProcessResult  # noqa: E402
 
 
 @pytest.fixture
@@ -30,14 +31,36 @@ def tk_root():
         pytest.skip(f"no X display available: {e}")
     yield root
     root.destroy()
+    # Deterministically finalize the (now unreachable) app objects of this
+    # test HERE, in the main thread.  The app and its event queue form a
+    # reference cycle, so without this the cyclic GC would collect them at
+    # an arbitrary later allocation point — possibly in a WORKER thread of
+    # a later test.  There, the tkinter Variable.__del__ finalizers would
+    # call into the dead Tcl interpreter from the wrong thread (RuntimeError
+    # / Tcl lock contention with a concurrent main-thread GC = the test
+    # suite's mysterious "processing worker did not finish" hangs).
+    import gc
+
+    gc.collect()
 
 
 def _dummy_pdf(tmp_path: Path) -> Path:
-    """A file that exists (the stubbed process_pdf never reads its bytes,
-    but the worker's job planning — like the CLI's — requires the input
-    to exist)."""
+    """A REAL minimal 1-page PDF (fitz-generated).
+
+    The ADR 0011, D2 pre-check runs the real ``diagnose_pdf`` on the input
+    in ``start_processing`` — a fake ``%PDF-1.4 dummy`` header would fail
+    the pre-check ("not a valid PDF") and abort every worker test.  The
+    stubbed ``process_pdf`` never reads the bytes, but the input must be a
+    valid PDF and must exist (job planning requirement).
+    """
     p = tmp_path / "in.pdf"
-    p.write_bytes(b"%PDF-1.4 dummy")
+    if not p.exists():
+        import fitz
+
+        doc = fitz.open()
+        doc.new_page()
+        doc.save(str(p))
+        doc.close()
     return p
 
 
@@ -410,3 +433,224 @@ class TestFolderBatch:
         app._poll_events()  # pump the queued dialog lambda (main thread)
         assert shown, "an error dialog must be shown"
         assert "boom-input" in shown[-1][1]
+
+
+class TestPrecheck:
+    """ADR 0011, D2: a file-level problem of a single-file input
+    (password-protected / damaged / empty / missing) is caught in the main
+    thread BEFORE the controls are disabled and BEFORE any worker starts
+    (fail-fast with a clear dialog)."""
+
+    def test_corrupt_input_shows_clear_dialog_and_aborts(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        shown = []
+        monkeypatch.setattr(
+            gui.messagebox, "showerror", lambda t, m: shown.append((t, m))
+        )
+        calls = []
+        monkeypatch.setattr(gui, "process_pdf", lambda *a, **k: calls.append(1))
+        app = gui.SmartboardGUI(tk_root)
+        bad = tmp_path / "bad.pdf"
+        bad.write_bytes(b"this is not a pdf")
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(bad))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        before = {t for t in threading.enumerate()}
+        app.start_processing()
+        assert not calls, "process_pdf must not be called on a damaged input"
+        assert {t for t in threading.enumerate()} == before, (
+            "no worker thread may start when the pre-check fails"
+        )
+        assert shown, "an error dialog must be shown"
+        assert "not a valid pdf" in shown[0][1].lower()
+        # the run was aborted BEFORE disabling the controls
+        assert str(app.advanced_btn.cget("state")) in ("normal", "")
+
+    def test_encrypted_input_shows_password_dialog_and_aborts(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        import synth
+
+        shown = []
+        monkeypatch.setattr(
+            gui.messagebox, "showerror", lambda t, m: shown.append((t, m))
+        )
+        calls = []
+        monkeypatch.setattr(gui, "process_pdf", lambda *a, **k: calls.append(1))
+        app = gui.SmartboardGUI(tk_root)
+        secret = synth.make_encrypted_pdf(tmp_path / "secret.pdf")
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(secret))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        app.start_processing()
+        assert not calls
+        assert shown and "password-protected" in shown[0][1].lower()
+
+    def test_missing_input_shows_not_found_dialog_and_aborts(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        shown = []
+        monkeypatch.setattr(
+            gui.messagebox, "showerror", lambda t, m: shown.append((t, m))
+        )
+        calls = []
+        monkeypatch.setattr(gui, "process_pdf", lambda *a, **k: calls.append(1))
+        app = gui.SmartboardGUI(tk_root)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(tmp_path / "nope.pdf"))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        app.start_processing()
+        assert not calls
+        assert shown and "not found" in shown[0][1].lower()
+
+    def test_valid_input_passes_precheck_and_starts_worker(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        """A valid PDF must NOT be stopped by the pre-check (no dialog)."""
+        shown = []
+        monkeypatch.setattr(
+            gui.messagebox, "showerror", lambda t, m: shown.append((t, m))
+        )
+        calls = []
+
+        def fake_process_pdf(*args, **kwargs):
+            calls.append(1)
+            return ProcessResult(input_path=args[0], output_path=args[1])
+
+        monkeypatch.setattr(gui, "process_pdf", fake_process_pdf)
+        app = gui.SmartboardGUI(tk_root)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(_dummy_pdf(tmp_path)))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        _run_start(app)
+        assert calls, "process_pdf must be called for a valid input"
+        assert not shown, "no error dialog may be shown for a valid input"
+
+
+class TestWorkerFailureDiagnosis:
+    """ADR 0011, D2: in the worker loop (folder input), a failed file gets
+    the clear diagnosis message in the failure list."""
+
+    def test_corrupt_file_failure_uses_diagnosis_message(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        """process_pdf raises a raw pipeline error for a damaged file; the
+        'Some files failed' dialog must carry the user-facing diagnosis
+        instead."""
+        shown = []
+        monkeypatch.setattr(
+            gui.messagebox, "showerror", lambda t, m: shown.append((t, m))
+        )
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        (ind / "broken.pdf").write_bytes(b"this is not a pdf")
+        (ind / "good.pdf").write_bytes(b"%PDF-1.4 dummy")  # never read (stub)
+
+        def fake(src, dst, **kw):
+            if Path(src).name == "broken.pdf":
+                raise gui.SmartboardError("raw pipeline error")
+            return ProcessResult(input_path=src, output_path=dst)
+
+        monkeypatch.setattr(gui, "process_pdf", fake)
+        app = gui.SmartboardGUI(tk_root)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(ind))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "outputs"))
+        _run_start(app)
+        app._poll_events()
+        assert shown, "the failure dialog must be shown"
+        message = shown[-1][1]
+        assert "not a valid pdf" in message.lower(), (
+            "the clear diagnosis must replace the raw error"
+        )
+        assert "raw pipeline error" not in message
+
+    def test_undetermined_failure_keeps_generic_message(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        """If diagnose_pdf finds no file-level problem (valid input), the
+        failure line falls back to the generic 'unexpected error (see log)'
+        wording for non-SmartboardError exceptions."""
+        shown = []
+        monkeypatch.setattr(
+            gui.messagebox, "showerror", lambda t, m: shown.append((t, m))
+        )
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        import fitz
+
+        good = ind / "good.pdf"  # a VALID pdf -> diagnose_pdf finds nothing
+        doc = fitz.open()
+        doc.new_page()
+        doc.save(str(good))
+        doc.close()
+
+        def fake(src, dst, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(gui, "process_pdf", fake)
+        app = gui.SmartboardGUI(tk_root)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(ind))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "outputs"))
+        _run_start(app)
+        app._poll_events()
+        assert shown
+        assert "unexpected error (see log)" in shown[-1][1]
+
+
+class TestDoneMessageNoBoard:
+    """ADR 0011, D2 / P10-FR-6: when no board was detected on any page, the
+    Done message carries the extra 'unchanged copy' line."""
+
+    def _run_with_pages(self, app, monkeypatch, tmp_path, pages):
+        def fake(src, dst, **kw):
+            res = ProcessResult(input_path=src, output_path=dst)
+            res.pages = pages
+            return res
+
+        monkeypatch.setattr(gui, "process_pdf", fake)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(_dummy_pdf(tmp_path)))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "out.pdf"))
+        _run_start(app)
+
+    def test_no_board_line_in_done_message(self, tk_root, monkeypatch, tmp_path):
+        shown_info = []
+        monkeypatch.setattr(
+            gui.messagebox, "showinfo", lambda t, m: shown_info.append((t, m))
+        )
+        app = gui.SmartboardGUI(tk_root)
+        self._run_with_pages(
+            app,
+            monkeypatch,
+            tmp_path,
+            [PageResult(page_index=0, detected=False, method="copy")],
+        )
+        app._poll_events()
+        assert shown_info, "the Done dialog must be shown"
+        assert "unchanged copy of the input" in shown_info[0][1]
+
+    def test_board_found_no_extra_line(self, tk_root, monkeypatch, tmp_path):
+        shown_info = []
+        monkeypatch.setattr(
+            gui.messagebox, "showinfo", lambda t, m: shown_info.append((t, m))
+        )
+        app = gui.SmartboardGUI(tk_root)
+        self._run_with_pages(
+            app,
+            monkeypatch,
+            tmp_path,
+            [PageResult(page_index=0, detected=True, method="image-replace")],
+        )
+        app._poll_events()
+        assert shown_info
+        assert "unchanged copy of the input" not in shown_info[0][1]

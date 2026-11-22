@@ -342,6 +342,62 @@ def make_pdf(path: "str | Path", pages: Sequence[dict]) -> List[dict]:
     return truths
 
 
+#: Minimal handcrafted PDF with ZERO pages (PyMuPDF cannot save one — it
+#: raises ``ValueError("cannot save with zero pages")``).  Used for the
+#: special-case tests of ADR 0011, D2.
+ZERO_PAGE_PDF = b"""%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [] /Count 0 >>
+endobj
+xref
+0 3
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+trailer
+<< /Size 3 /Root 1 0 R >>
+startxref
+109
+%%EOF
+"""
+
+
+def make_zero_page_pdf(path: "str | Path") -> Path:
+    """Write a valid-structure PDF without any pages (ADR 0011, D2)."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(ZERO_PAGE_PDF)
+    return p
+
+
+def make_encrypted_pdf(
+    path: "str | Path",
+    user_pw: str = "secret",
+    owner_pw: str = "owner",
+) -> Path:
+    """Write a 1-page AES-256-encrypted PDF (ADR 0011, D2).
+
+    An empty *user_pw* produces owner-password-only encryption, which
+    keeps the file usable without interaction (``needs_pass == False``).
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "board", fontsize=24)
+    doc.save(
+        str(p),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        user_pw=user_pw,
+        owner_pw=owner_pw,
+    )
+    doc.close()
+    return p
+
+
 def page_render(pdf_path: "str | Path", dpi: int = DPI) -> np.ndarray:
     """Render the first page of a PDF to a BGR image at *dpi*."""
     from smartboard_invert.processing import pdf_to_images
