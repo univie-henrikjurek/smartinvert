@@ -100,9 +100,22 @@ the window:
 - **Output (optional)** — destination file or folder. Leave empty for the
   default `<name>_inverted.pdf` next to the input; folder input requires an
   output folder
+- **Auf Board zuschneiden (Rand entfernen)** — removes the page margin
+  around the board (default: on)
+- **Zielhintergrund** — *Complement (255 − v)* (default) or *Reinweiß*
+- **▸ Erweiterte Optionen** — expand for the advanced settings:
+  *Invert colours*, which marker colours to keep un-inverted
+  (Rot/Grün/Blau/Gelb — default: Rot + Grün), and *Zusätzliche
+  Hex-Farben* (explicit hex colours/ranges to keep, e.g. `FF0000,
+  00FF00, 000001-0000FF`; empty = off)
 - **Preview first page** — original and processed page side by side
-- **Run** — processes all pages with a progress bar; a dialog reports the
-  output location when finished
+- **Run** — processes all pages with a progress bar; when finished, the
+  Done dialog reports the output location and offers
+  **Speicherordner öffnen**, which opens the file manager right at your
+  result — no need to navigate there yourself
+- Problematic files (password-protected, damaged, or empty PDFs) get a
+  clear explanation instead of an error dump — e.g. a password-protected
+  PDF tells you to remove the password first
 
 ---
 
@@ -257,6 +270,9 @@ then continues normally — without further arguments it opens the GUI.
 | Windows Smart Screen: “Your PC was protected” | Click **More info → Run anyway** — the scripts are local and unsigned, this is expected |
 | GUI won't open in a remote/SSH session without a display | The GUI needs a desktop; use the CLI there instead (`start.bat -i … -o …`) |
 | Detection fails on a page (“no unambiguous region”) | The page was copied unchanged (fail-safe). Try a higher `--dpi`, check the debug composite, or inspect the page manually |
+| “…is password-protected (encrypted). Remove the password first” | The PDF has a user password. Open it in a PDF viewer, save a copy *without* the password, and run the tool on that copy |
+| “…is not a valid PDF (it may be damaged or not a PDF at all)” | The file is damaged or not a PDF at all — re-export or re-download it from the smartboard app |
+| “…contains no pages” | The PDF is empty. Re-export it from the smartboard app |
 | Offline machine (no internet at all) | Copy a prepared `.venv/` from another machine of the same OS/architecture, or pre-install the dependencies; see the development notes in the README |
 
 ---

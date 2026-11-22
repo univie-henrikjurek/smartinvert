@@ -204,14 +204,23 @@ start.bat         # Windows
   visible board area)
 - **Zielhintergrund** — target background of the board: *Complement (255 − v)*
   (default) or *Reinweiß (255,255,255)*
-- The red/green marker colours are always kept un-inverted (the former
-  "Rot/Grün erhalten" checkboxes were removed in v0.7.0 as redundant)
-- **Zusätzliche Hex-Farben** — explicit hex colours / ranges left
-  un-inverted, same syntax as `--keep-hex` (e.g. `FF0000, 00FF00,
-  000001-0000FF`; empty = off, since v0.6.0). Blue/yellow and free `R,G,B`
-  targets are CLI-only
+- **▸ Erweiterte Optionen** — collapsible section (collapsed by default,
+  v0.9.0) with the less frequently used options:
+  - **Invert colours** — apply the inversion (default: on)
+  - **Markerfarben erhalten** — keep the selected marker colours
+    un-inverted: Rot / Grün / Blau / Gelb (default: Rot + Grün, as before;
+    the `--keep-colors` option is now reachable from the GUI)
+  - **Zusätzliche Hex-Farben** — explicit hex colours / ranges left
+    un-inverted, same syntax as `--keep-hex` (e.g. `FF0000, 00FF00,
+    000001-0000FF`; empty = off, since v0.6.0). Free `R,G,B` target
+    backgrounds remain CLI-only
 - **Preview first page** — original and processed page side by side
-- **Run** — processes with a progress bar and reports the output location
+- **Run** — processes with a progress bar; the Done dialog then reports the
+  output location and offers **Speicherordner öffnen**, which opens the
+  file manager right at the result (v0.9.0)
+- Problematic inputs (password-protected, damaged or empty PDFs) get a
+  clear explanation instead of an error dump — before the run starts
+  (single file) or in the failure list (batch)
 
 ## Project layout
 
@@ -219,7 +228,10 @@ start.bat         # Windows
 smartboard_invert/
   detection.py    # Rectangle detection (threshold, gates, confidence, refinement)
   processing.py   # Image transformations (255 − v, remap, keep masks), PDF ⇄ images
-  pdfpipeline.py  # process_pdf(): three output strategies, verification, debug
+  pdfpipeline.py  # process_pdf(): output strategies, verification, debug
+  vectorops.py    # Vector-preserving inversion (content-stream rewrite)
+  diagnostics.py  # Read-only file-level diagnosis for clear error messages
+  reveal.py       # "Speicherordner öffnen": open the file manager at the output
   cli.py          # Batch CLI with JSON config support
   gui.py          # Tkinter GUI
   __main__.py     # python -m smartboard_invert entry point

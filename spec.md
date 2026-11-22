@@ -376,7 +376,7 @@ Schriftzug-Änderungen).
 
 User-Anfrage: GUI-Verbesserungen — einklappbare erweiterte Optionen, klare
 Sonderfall-Meldungen, „Speicherordner öffnen"-Button im Erfolgspopup.
-Grundlage: [ADR 0011](docs/adr/0011-gui-qo-erweiterte-optionen-sonderfaelle-speicherort.md).
+Grundlage: [ADR 0011](docs/adr/0011-gui-qol-erweiterte-optionen-sonderfaelle-speicherort.md).
 Branch `feature/gui-qol` (gedockt auf `feature/byo-env`). **Presets und
 Tkinter-Politur sind bewusst ausgeklammert** (Phase 11+); ein browser-basiertes
 GUI ist verworfen.
