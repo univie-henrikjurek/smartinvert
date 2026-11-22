@@ -205,7 +205,7 @@ start.bat         # Windows
 - **Zielhintergrund** — target background of the board: *Complement (255 − v)*
   (default) or *Reinweiß (255,255,255)*
 - **▸ Erweiterte Optionen** — collapsible section (collapsed by default,
-  v0.9.0) with the less frequently used options:
+  since v0.9.0-dev) with the less frequently used options:
   - **Invert colours** — apply the inversion (default: on)
   - **Markerfarben erhalten** — keep the selected marker colours
     un-inverted: Rot / Grün / Blau / Gelb (default: Rot + Grün, as before;
@@ -217,7 +217,7 @@ start.bat         # Windows
 - **Preview first page** — original and processed page side by side
 - **Run** — processes with a progress bar; the Done dialog then reports the
   output location and offers **Speicherordner öffnen**, which opens the
-  file manager right at the result (v0.9.0)
+  file manager right at the result (since v0.9.0-dev)
 - Problematic inputs (password-protected, damaged or empty PDFs) get a
   clear explanation instead of an error dump — before the run starts
   (single file) or in the failure list (batch)
@@ -250,7 +250,7 @@ python3 -m venv .venv
 
 The test suite covers detection, processing, the end-to-end pipeline
 (including the mandatory scenario set), and the CLI, with an 80 % coverage
-gate. CI (GitHub Actions) runs the suite on Python 3.10 and 3.13, installs the
+gate. CI (GitHub Actions) runs the suite on Python 3.9 and 3.13, installs the
 package the same way end users do, and executes a smoke test on the bundled
 sample. See [STATUS.md](STATUS.md) for the current project state.
 
