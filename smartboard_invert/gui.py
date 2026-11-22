@@ -19,7 +19,10 @@ The GUI mirrors the CLI options but presents them in a graphical form:
   *Zusätzliche Hex-Farben* entry (explicit hex colours / ranges such as
   ``FF0000, 00FF00, 000001-0000FF`` left un-inverted, ADR 0004).
 * A *Preview* button that shows the first page before/after processing.
-* A *Run* button that processes the entire document and displays a progress bar.
+* A *Run* button that processes the entire document and displays a progress
+  bar.  On success a "Done" dialog (own ``Toplevel``) offers the button
+  "Speicherordner öffnen", which opens the file manager at the output
+  (ADR 0011, D3), so beginners can find their result.
 
 All heavy work runs in a background thread so the UI stays responsive.
 """
@@ -38,6 +41,7 @@ from tkinter import (
     Checkbutton,
     IntVar,
     StringVar,
+    Toplevel,
     TclError,
     filedialog,
     messagebox,
@@ -53,6 +57,7 @@ from .cli import _plan_jobs, parse_keep_hex
 from .diagnostics import diagnose_pdf
 from .pdfpipeline import process_pdf
 from .processing import SmartboardError
+from .reveal import reveal_output
 
 logger = logging.getLogger(__name__)
 
@@ -475,18 +480,59 @@ class SmartboardGUI:
                     error=True,
                 )
             elif total == 1:
-                dialog(
-                    "Done",
-                    f"Saved to {jobs[0][1]}\n{last_result.summary()}{no_board_line()}",
+                message = (
+                    f"Saved to {jobs[0][1]}\n{last_result.summary()}{no_board_line()}"
+                )
+                # ADR 0011, D3: the success dialog is an own Toplevel with
+                # the "Speicherordner öffnen" button (messagebox cannot
+                # carry extra buttons).  Single file -> the file manager
+                # marks the output file.
+                target = jobs[0][1]
+                self._events.put(
+                    lambda m=message, t=target: self._show_done_dialog(m, t)
                 )
             else:
-                dialog(
-                    "Done",
-                    f"Saved {total} file(s) to {jobs[0][1].parent}{no_board_line()}",
+                message = (
+                    f"Saved {total} file(s) to {jobs[0][1].parent}{no_board_line()}"
+                )
+                # Batch success -> open the output folder (ADR 0011, D3).
+                target = jobs[0][1].parent
+                self._events.put(
+                    lambda m=message, t=target: self._show_done_dialog(m, t)
                 )
         finally:
             # Re‑enable UI components (executed on the main thread).
             self._events.put(self._reset_ui)
+
+    def _show_done_dialog(self, message: str, reveal_target: "Path | str") -> None:
+        """The success dialog (ADR 0011, D3).
+
+        Own ``Toplevel`` (instead of ``messagebox.showinfo``, which cannot
+        carry extra buttons): the message plus the German
+        "Speicherordner öffnen" button (explicit user request) that opens
+        the file manager at the output, and "OK".
+
+        Runs in the main thread (the worker queues it like every other UI
+        event).  Modal while open (``grab_set``) so the main window cannot
+        be operated underneath; "Speicherordner öffnen" keeps the dialog
+        open (the file manager opens alongside it), "OK" closes it.
+        """
+        win = Toplevel(self.master)
+        win.title("Done")
+        win.transient(self.master)
+        Label(win, text=message, justify="left", padx=20).pack(pady=(20, 10))
+        buttons = Frame(win)
+        buttons.pack(pady=(0, 15))
+        Button(
+            buttons,
+            text="Speicherordner öffnen",
+            # reveal_output() is non-blocking (Popen) and never raises
+            # (missing opener -> log warning, ADR 0011, D3).
+            command=lambda: (reveal_output(reveal_target), win.focus_set()),
+        ).pack(side="left", padx=5)
+        Button(buttons, text="OK", command=win.destroy).pack(side="left", padx=5)
+        win.grab_set()
+        win.focus_set()
 
     def _set_controls_state(self, state: str) -> None:
         """Set the state ('normal'/'disabled') of every interactive widget.

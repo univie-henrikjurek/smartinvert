@@ -606,11 +606,16 @@ class TestWorkerFailureDiagnosis:
         assert "unexpected error (see log)" in shown[-1][1]
 
 
-class TestDoneMessageNoBoard:
-    """ADR 0011, D2 / P10-FR-6: when no board was detected on any page, the
-    Done message carries the extra 'unchanged copy' line."""
+class TestDoneDialog:
+    """ADR 0011, D3 / P10-FR-6: the success dialog is an own Toplevel (a
+    plain messagebox cannot carry extra buttons) with the German
+    "Speicherordner öffnen" button; when no board was detected on any
+    page, the message carries the extra 'unchanged copy' line."""
 
     def _run_with_pages(self, app, monkeypatch, tmp_path, pages):
+        """Run a single-file job with a stubbed process_pdf returning
+        *pages*; pump the event queue so the Done Toplevel is created.
+        Returns the Done Toplevel."""
         def fake(src, dst, **kw):
             res = ProcessResult(input_path=src, output_path=dst)
             res.pages = pages
@@ -622,35 +627,127 @@ class TestDoneMessageNoBoard:
         app.output_path.delete(0, "end")
         app.output_path.insert(0, str(tmp_path / "out.pdf"))
         _run_start(app)
-
-    def test_no_board_line_in_done_message(self, tk_root, monkeypatch, tmp_path):
-        shown_info = []
-        monkeypatch.setattr(
-            gui.messagebox, "showinfo", lambda t, m: shown_info.append((t, m))
-        )
-        app = gui.SmartboardGUI(tk_root)
-        self._run_with_pages(
-            app,
-            monkeypatch,
-            tmp_path,
-            [PageResult(page_index=0, detected=False, method="copy")],
-        )
         app._poll_events()
-        assert shown_info, "the Done dialog must be shown"
-        assert "unchanged copy of the input" in shown_info[0][1]
+        return self._done_window(app)
 
-    def test_board_found_no_extra_line(self, tk_root, monkeypatch, tmp_path):
-        shown_info = []
-        monkeypatch.setattr(
-            gui.messagebox, "showinfo", lambda t, m: shown_info.append((t, m))
-        )
+    @staticmethod
+    def _done_window(app):
+        from tkinter import Toplevel
+
+        for w in app.master.winfo_children():
+            if isinstance(w, Toplevel):
+                return w
+        pytest.fail("no Done Toplevel was created")
+
+    @staticmethod
+    def _buttons(widget):
+        from tkinter import Button
+
+        found = []
+        for child in widget.winfo_children():
+            if isinstance(child, Button):
+                found.append(child)
+            found.extend(TestDoneDialog._buttons(child))
+        return found
+
+    @staticmethod
+    def _label_text(widget):
+        from tkinter import Label
+
+        for child in widget.winfo_children():
+            if isinstance(child, Label):
+                return child.cget("text")
+            # the buttons frame has no label of interest
+        pytest.fail("no message Label in the Done dialog")
+
+    def test_done_dialog_has_message_and_buttons(
+        self, tk_root, monkeypatch, tmp_path
+    ):
         app = gui.SmartboardGUI(tk_root)
-        self._run_with_pages(
+        win = self._run_with_pages(
             app,
             monkeypatch,
             tmp_path,
             [PageResult(page_index=0, detected=True, method="image-replace")],
         )
+        assert "Saved to" in self._label_text(win)
+        texts = [b.cget("text") for b in self._buttons(win)]
+        assert "Speicherordner öffnen" in texts
+        assert "OK" in texts
+        win.destroy()
+
+    def test_reveal_button_opens_file_manager_at_output_file(
+        self, tk_root, monkeypatch, tmp_path
+    ):
+        """Single-file success: the button must open the file manager at
+        the output FILE (Windows/macOS mark it, Linux opens the folder)."""
+        revealed = []
+        monkeypatch.setattr(
+            gui, "reveal_output", lambda t: revealed.append(t) or True
+        )
+        app = gui.SmartboardGUI(tk_root)
+        win = self._run_with_pages(
+            app,
+            monkeypatch,
+            tmp_path,
+            [PageResult(page_index=0, detected=True, method="image-replace")],
+        )
+        buttons = {b.cget("text"): b for b in self._buttons(win)}
+        buttons["Speicherordner öffnen"].invoke()
+        assert revealed, "reveal_output must be called"
+        assert Path(revealed[0]).resolve() == (tmp_path / "out.pdf").resolve()
+        # the dialog stays open after revealing (user comes back to it)
+        assert win.winfo_exists()
+        win.destroy()
+
+    def test_batch_reveal_opens_output_folder(self, tk_root, monkeypatch, tmp_path):
+        """Batch success: the button must open the output FOLDER."""
+        revealed = []
+        monkeypatch.setattr(
+            gui, "reveal_output", lambda t: revealed.append(t) or True
+        )
+
+        def fake(src, dst, **kw):
+            return ProcessResult(input_path=src, output_path=dst)
+
+        monkeypatch.setattr(gui, "process_pdf", fake)
+        ind = tmp_path / "inputs"
+        ind.mkdir()
+        (ind / "a.pdf").write_bytes(b"%PDF-1.4 dummy")  # never read (stub)
+        (ind / "b.pdf").write_bytes(b"%PDF-1.4 dummy")
+        app = gui.SmartboardGUI(tk_root)
+        app.input_path.delete(0, "end")
+        app.input_path.insert(0, str(ind))
+        app.output_path.delete(0, "end")
+        app.output_path.insert(0, str(tmp_path / "outputs"))
+        _run_start(app)
         app._poll_events()
-        assert shown_info
-        assert "unchanged copy of the input" not in shown_info[0][1]
+        win = self._done_window(app)
+        assert f"Saved {2} file(s)" in self._label_text(win)
+        buttons = {b.cget("text"): b for b in self._buttons(win)}
+        buttons["Speicherordner öffnen"].invoke()
+        assert revealed, "reveal_output must be called"
+        assert Path(revealed[0]).resolve() == (tmp_path / "outputs").resolve()
+        win.destroy()
+
+    def test_no_board_line_in_done_message(self, tk_root, monkeypatch, tmp_path):
+        app = gui.SmartboardGUI(tk_root)
+        win = self._run_with_pages(
+            app,
+            monkeypatch,
+            tmp_path,
+            [PageResult(page_index=0, detected=False, method="copy")],
+        )
+        assert "unchanged copy of the input" in self._label_text(win)
+        win.destroy()
+
+    def test_board_found_no_extra_line(self, tk_root, monkeypatch, tmp_path):
+        app = gui.SmartboardGUI(tk_root)
+        win = self._run_with_pages(
+            app,
+            monkeypatch,
+            tmp_path,
+            [PageResult(page_index=0, detected=True, method="image-replace")],
+        )
+        assert "unchanged copy of the input" not in self._label_text(win)
+        win.destroy()
